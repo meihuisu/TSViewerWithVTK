@@ -1,0 +1,13 @@
+// for local file,
+http://localhost/~mei/testV/index.html?name=[Indian Hill,Walnut Creek]&fileURL=[cfm_data/WTRA-USAV-INDH-Indian_Hill_fault-CFM5.ts,cfm_data/WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5.ts]
+http://localhost/~mei/testV/index.html?fileURL=cfm_data/WTRA-USAV-INDH-Indian_Hill_fault-CFM5.ts
+http://localhost/~mei/testV/index.html?fileURL=cfm_data/CFM_1571420943568_s.zip
+
+// for remote file,
+http://localhost/~mei/testV/index.html?fileURL=http://localhost/~mei/testV/cfm_data/WTRA-USAV-UPLD-Upland_fault_dipslip-CFM1.ts
+http://localhost/~mei/testV/index.html?fileURL=http://localhost/~mei/testV/cfm_data/CFM_1571420943568_s.zip
+http://localhost/~mei/testV/index.html?fileURL=http://localhost/~mei/testV/cfm_data/CFM_1571460363892.zip
+http://localhost/~mei/testV/index.html?name=[Indian Hill,Walnut Creek]&fileURL=[http://localhost/~mei/testV/cfm_data/WTRA-USAV-INDH-Indian_Hill_fault-CFM5.ts,http://localhost/~mei/testV/cfm_data/WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5.ts]
+
+
+

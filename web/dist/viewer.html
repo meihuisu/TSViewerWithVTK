@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-type" content="text/html; charset=utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<link rel="stylesheet" href="css/vendor/font-awesome.min.css">
+<link rel="stylesheet" href="css/vendor/bootstrap.min.css">
+<link rel="stylesheet" href="css/vendor/bootstrap-grid.min.css">
+<link rel="stylesheet" href="css/vendor/jquery-ui.css">
+<link rel="stylesheet" href="css/vendor/glyphicons.css">
+<link rel="stylesheet" href="css/scec-ui.css">
+
+<script type='text/javascript' src='js/vendor/jquery.min.js'></script>
+<script type='text/javascript' src='js/vendor/bootstrap.min.js'></script>
+<script type='text/javascript' src='js/vendor/jquery-ui.js'></script>
+<script type='text/javascript' src='js/FileSaver.js'></script>
+<script type='text/javascript' src='js/jszip.js'></script>
+<script type='text/javascript' src='js/view_main.js'></script>
+
+  </head>
+  <body>
+
+ <div class="row col-10">
+  <button id="plotbtn" type="button" title="plot faults" data-toggle="modal" data-target="#modalGM" style='border:none;'> CLICK ME! </button>
+ </div>
+
+<!--Modal: Name-->
+<div class="modal" id="modalGM" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg" role="document">
+
+    <!--Content-->
+    <div class="modal-content">
+      <!--Header-->
+      <div class="modal-header"> 
+        <button id="plotRefreshbtn" class="btn btn-outline-primary btn-md" type="button">Refresh</button>
+        <button id="plotAddbtn" class="btn btn-outline-primary btn-md" type="button">Add</button>
+        <button id="plotUIbtn" class="btn btn-outline-primary btn-md" type="button">UI</button>
+      </div>
+
+      <!--Body-->
+      <div class="modal-body">
+  <div class="row col-12">
+  <iframe id="plotIfram" src="" style="height:500px;width:100%;" frameborder="0" allowfullscreen> </iframe>
+  </div>
+      </div>
+
+      <div class="modal-footer justify-content-center">
+        <button type="button" class="btn btn-outline-primary btn-md" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+    <!--/.Content-->
+
+  </div>
+</div>
+<!--Modal: Name-->
+
+  </body>
+</html>
+

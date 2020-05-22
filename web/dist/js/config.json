@@ -1,0 +1,12 @@
+{[
+{"name"="Indian_Hill",
+ "url"="WTRA-USAV-INDH-Indian_Hill_fault-CFM5.stl","color"=1},
+{"name"="San_Jose",
+ "url"="WTRA-USAV-SNJH-San_Jose_fault-CFM5.stl","color"=2},
+{"name"="Upland",
+ "url"="WTRA-USAV-UPLD-Upland_fault_dipslip-CFM1.stl","color"=3},
+{"name="Walnut_Creek",
+ "url"="WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5.stl","color"=4}
+]}
+
+
