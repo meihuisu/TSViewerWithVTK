@@ -498,7 +498,7 @@ function buildControlUI() {
     var color_hex=getHexColor(actor);
     htmlBuffer.push(
     `<tr><td>
-<input type="color" id="color_${idx}" name="${idx}" value="${color_hex}" onchange=changeColor(${idx},this.value)></td><td><div class="click visible" data-index="${idx}">${item.name}</div></td></tr>`);
+<input type="color" id="color_${idx}" name="${idx}" style="width:23px" value="${color_hex}" onchange=changeColor(${idx},this.value)></td><td><div class="click visible" data-index="${idx}">${item.name}</div></td></tr>`);
   });
   htmlBuffer.push(`</tbody>`);
 
