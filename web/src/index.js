@@ -23,6 +23,13 @@ import vtkProperty from 'vtk.js/Sources/Rendering/Core/Property';
 import vtkBoundingBox from 'vtk.js/Sources/Common/DataModel/BoundingBox';
 import vtkCamera from 'vtk.js/Sources/Rendering/Core/Camera';
 
+import vtkOrientationMarkerWidget from 'vtk.js/Sources/Interaction/Widgets/OrientationMarkerWidget'
+import vtkAxesActor from 'vtk.js/Sources/Rendering/Core/AxesActor';
+import * as vtkMath from 'vtk.js/Sources/Common/Core/Math';
+
+import vtkOutlineFilter from 'vtk.js/Sources/Filters/General/OutlineFilter';
+import vtkPolyData from 'vtk.js/Sources/Common/DataModel/PolyData';
+
 import style from './TSViewer.module.css';
 
 const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
@@ -38,16 +45,92 @@ const outline = [];
 const background_scene = [];
 // tracking bounding box =[xMin, xMax, yMin, yMax, zMin, zMax] 
 let track_bb;
-// track active camera
-let track_camera;
 
 // need to expose at the top level
 let fullScreenRenderer;
 let renderer;
 let renderWindow;
-let renderCamera;
-let resetCamera;
-let render;
+let orientationWidget;
+let activeCamera;
+
+//[xMin, xMax, yMin, yMax, zMin, zMax] 
+function  debug_printBB(note,bounds) {
+  window.console.log("===BB, "+note+"[xMin, xMax, yMin, yMax, zMin, zMax]");
+  window.console.log("       "+bounds.toString()); 
+}
+
+function debug_printCamera(note) {
+  let pos=activeCamera.getPosition();
+  let angle=activeCamera.getViewAngle();
+  let vmatrix=activeCamera.getViewMatrix();
+  let viewup=activeCamera.getViewUp();
+  let focal=activeCamera.getFocalPoint();
+  window.console.log("===camera, "+note);
+  window.console.log("  position "+pos.toString());
+  window.console.log("  angle    ",angle);
+  window.console.log("  viewup   "+viewup.toString());
+  window.console.log("  focal    "+focal.toString());
+  window.console.log("  viewMatrix    "+vmatrix.toString());
+}
+
+
+function addBoundingBox(bbdata) {
+  window.console.log("in BBound");
+  const bbPoints = Float32Array.from(bbdata);
+  const bbPolyData = vtkPolyData.newInstance();
+  bbPolyData.getPoints().setData(bbPoints, 3);
+//bbPolyData.getVerts().setData(Uint16Array.from([2, 0, 1]));
+
+  const bbBounds = vtkOutlineFilter.newInstance();
+  const bbMapper = vtkMapper.newInstance();
+  const bbActor = vtkActor.newInstance();
+  bbBounds.setInputData(bbPolyData);
+  bbMapper.setInputConnection(bbBounds.getOutputPort());
+  bbActor.setMapper(bbMapper);
+  renderer.addActor(bbActor);
+}
+
+function majorAxis(vec3, idxA, idxB) {
+  const axis = [0, 0, 0];
+  const idx = Math.abs(vec3[idxA]) > Math.abs(vec3[idxB]) ? idxA : idxB;
+  const value = vec3[idx] > 0 ? 1 : -1;
+  axis[idx] = value;
+  return axis;
+}
+
+function reset2North(direction) {
+
+  activeCamera.setPosition(0,0,1);
+  activeCamera.setViewUp(0,1,0);
+  activeCamera.setFocalPoint(0,0,0);
+  renderer.resetCamera();
+
+  const viewUp = activeCamera.getViewUp();
+  const focalPoint = activeCamera.getFocalPoint();
+  const position = activeCamera.getPosition();
+
+  const distance = Math.sqrt(
+    vtkMath.distance2BetweenPoints(position, focalPoint)
+  );
+  activeCamera.setPosition(
+    focalPoint[0] + direction[0] * distance,
+    focalPoint[1] + direction[1] * distance,
+    focalPoint[2] + direction[2] * distance
+  );
+
+  if (direction[0]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 1, 2));
+  }
+  if (direction[1]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 2));
+  }
+  if (direction[2]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
+  }
+  renderer.resetCamera();
+  orientationWidget.updateMarkerOrientation();
+  renderWindow.render();
+}
 
 function onClick(event) {
   const el = event.target;
@@ -245,7 +328,8 @@ function loadZipContent(zipContent) {
             renderer.addActor(actor);
           }
         });
-        buildControlUI();
+        buildOrientationMarker();
+        buildControlLegend();
         renderer.resetCamera();
         renderWindow.render();
       });
@@ -279,12 +363,14 @@ function loadTSContent(bgIndex, tsContent, name) {
   let tsContentString=Decodeuint8arr(tsContent);
   tsReader.parseAsText(tsContentString);
   const nbOutputs = tsReader.getNumberOfOutputPorts();
+
 window.console.log("loadingTS..",name);
   for (let idx = 0; idx < nbOutputs; idx++) {
     const source = tsReader.getOutputData(idx);
     const mapper = vtkMapper.newInstance();
     const actor = vtkActor.newInstance();
     scene.push({ name, source, mapper, actor });
+
 
 // color & representation
     const prop = vtkProperty.newInstance();
@@ -298,25 +384,31 @@ window.console.log("loadingTS..",name);
     renderer.addActor(actor);
     let dataset = mapper.getInputData();
     let bounds = dataset.getBounds();
+    debug_printBB("dataset",bounds);
     if(bgIndex == 0) {
        track_bb=bounds;
     }
-    window.console.log("bounds..",bounds);
   }
-  buildControlUI();
+  buildOrientationMarker();
+  buildControlLegend();
+  
+  let rbounds=renderer.computeVisiblePropBounds();
+  debug_printBB("renderer",rbounds);
+
+//X  addBoundingBox(rbounds);
+
+/*
   if(bgIndex != 0) {
     window.console.log("clipping..",bgIndex);
 //    renderer.resetCameraClippingRange(track_bb);
     } else {
       renderer.resetCamera();
   }
+*/
 
-  let camera=renderer.getActiveCamera();
-  let pos=camera.getPosition();
-  let angle=camera.getViewAngle()
-  window.console.log("camera position is at ..",pos[0],",",pos[1],",",pos[2]);
-  window.console.log("camera angle is at ..",angle);
+  renderer.resetCamera();
   renderWindow.render();
+
 }
 
 export function load(container, options) {
@@ -331,11 +423,6 @@ export function load(container, options) {
 
   renderer = fullScreenRenderer.getRenderer();
   renderWindow = fullScreenRenderer.getRenderWindow();
-
-//bbonds=renderer.computeVisiblePropBounds()
-  renderCamera = renderer.getActiveCamera;
-  resetCamera = renderer.resetCamera;
-  render = renderWindow.render;
 
   if (options.file) {
     if (options.ext === 'ts') {
@@ -361,7 +448,8 @@ export function load(container, options) {
           mapper.setInputData(source);
           renderer.addActor(actor);
         }
-        buildControlUI();
+        buildOrientationMarker();
+        buildControlLegend();
         renderer.resetCamera();
         renderWindow.render();
       };
@@ -477,13 +565,36 @@ export function initLocalFileLoader(container) {
   fileContainer.addEventListener('dragover', preventDefaults);
 }
 
+function buildOrientationMarker() {
+  activeCamera=renderer.getActiveCamera();
+  const axes = vtkAxesActor.newInstance();
+  orientationWidget = vtkOrientationMarkerWidget.newInstance({
+    actor: axes,
+    interactor: renderWindow.getInteractor(),
+  });
+  orientationWidget.setEnabled(true);
+  orientationWidget.setViewportCorner(
+    vtkOrientationMarkerWidget.Corners.BOTTOM_RIGHT
+  );
+  orientationWidget.setViewportSize(0.20);
+  orientationWidget.setMinPixelSize(100);
+  orientationWidget.setMaxPixelSize(300);
+  
+  debug_printCamera("initial setup",activeCamera);
+  
+  renderer.resetCamera();
+  renderWindow.render();
+}
 
-function buildControlUI() {
+function buildControlLegend() {
   const htmlBuffer = [
     '<style>.visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;}</style>',
     ];
   htmlBuffer.push(
-    `<button id="UIbtn" type="button" title="plot faults" onClick="toggleUI()" style='display:none;'></button>`
+    `<button id="Northbtn" type="button" title="camera snap" onClick="toggleNorth()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Legendbtn" type="button" title="show Legend" onClick="toggleLegend()" style='display:none;'></button>`
     );
   htmlBuffer.push(
     `<button id="Reprbtn" type="button" title="switch Repr" onClick="toggleRepresentation()" style='display:none;'></button>`
@@ -530,8 +641,14 @@ function changeColor(idx, hex_color) {
   renderWindow.render();
 }
 
-function toggleUI() {
+function toggleLegend() {
   fullScreenRenderer.toggleControllerVisibility();
+}
+
+function toggleNorth() {
+  debug_printCamera("before snap");
+  reset2North([0,1,0]);
+  debug_printCamera("after snap");
 }
 
 // MAIN 
@@ -548,6 +665,9 @@ if (userParams.file || userParams.fileURL) {
   load(myContainer, userParams);
 }
 
+renderer.resetCamera();
+renderWindow.render();
+
 // Auto setup if no method get called within 100ms
 setTimeout(() => {
   if (autoInit) {
@@ -561,7 +681,8 @@ setTimeout(() => {
 // modify objects in your browser's developer console:
 // -----------------------------------------------------------
 
-global.toggleUI = toggleUI;
+global.toggleNorth = toggleNorth;
+global.toggleLegend = toggleLegend;
 global.changeColor = changeColor;
 global.toggleRepresentation = toggleRepresentation;
 global.scene = scene;
