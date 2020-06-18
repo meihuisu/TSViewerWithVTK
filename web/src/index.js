@@ -20,44 +20,37 @@ import vtkTSReader from 'vtk.js/Sources/IO/Geometry/TSReader';
 import vtkMapper from 'vtk.js/Sources/Rendering/Core/Mapper';
 import vtkActor from 'vtk.js/Sources/Rendering/Core/Actor';
 import vtkProperty from 'vtk.js/Sources/Rendering/Core/Property';
-import vtkBoundingBox from 'vtk.js/Sources/Common/DataModel/BoundingBox';
 import vtkCamera from 'vtk.js/Sources/Rendering/Core/Camera';
 
 import vtkOrientationMarkerWidget from 'vtk.js/Sources/Interaction/Widgets/OrientationMarkerWidget'
-import vtkAxesActor from 'vtk.js/Sources/Rendering/Core/AxesActor';
+import vtkGeoAxesActor from 'vtk.js/Sources/Rendering/Core/GeoAxesActor';
 import * as vtkMath from 'vtk.js/Sources/Common/Core/Math';
 
-import vtkOutlineFilter from 'vtk.js/Sources/Filters/General/OutlineFilter';
 import vtkPolyData from 'vtk.js/Sources/Common/DataModel/PolyData';
+
+import vtkInteractiveOrientationWidget from 'vtk.js/Sources/Widgets/Widgets3D/InteractiveOrientationWidget';
+import vtkWidgetManager from 'vtk.js/Sources/Widgets/Core/WidgetManager';
 
 import style from './TSViewer.module.css';
 
 const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
-let autoInit = true;
 const userParams = vtkURLExtract.extractURLParameters();
+var autoInit = true;
 
 /** housekeeping on actor **/
 // scene.push({ name, polydata, mapper, actor });
 const scene = [];
-// outline.push({ name, polydata, mapper, actor });
-const outline = [];
-// background_scene.push({ name, polydata, mapper, actor });
-const background_scene = [];
+// shoreline_scene.push({ name, polydata, mapper, actor });
+const shoreline_scene = [];
 // tracking bounding box =[xMin, xMax, yMin, yMax, zMin, zMax] 
 let track_bb;
 
 // need to expose at the top level
-let fullScreenRenderer;
-let renderer;
-let renderWindow;
-let orientationWidget;
-let activeCamera;
-
-//[xMin, xMax, yMin, yMax, zMin, zMax] 
-function  debug_printBB(note,bounds) {
-  window.console.log("===BB, "+note+"[xMin, xMax, yMin, yMax, zMin, zMax]");
-  window.console.log("       "+bounds.toString()); 
-}
+var fullScreenRenderer;
+var renderer;
+var renderWindow;
+var orientationWidget;
+var activeCamera;
 
 function debug_printCamera(note) {
   let pos=activeCamera.getPosition();
@@ -74,20 +67,32 @@ function debug_printCamera(note) {
 }
 
 
-function addBoundingBox(bbdata) {
-  window.console.log("in BBound");
-  const bbPoints = Float32Array.from(bbdata);
-  const bbPolyData = vtkPolyData.newInstance();
-  bbPolyData.getPoints().setData(bbPoints, 3);
-//bbPolyData.getVerts().setData(Uint16Array.from([2, 0, 1]));
+function addShoreline() {
+  if(shoreline_scene.length > 0) {
+    return;
+  }
+  window.console.log("add shoreline ");
+  const name="California shoreline";
+  const polydata = vtkPolyData.newInstance();
+// fill-in in polydata
+  const source=polydata.getOutputData();
+  const mapper = vtkMapper.newInstance();
+  const actor = vtkActor.newInstance();
+  shoreline_scene.push({ name, source, mapper, actor });
 
-  const bbBounds = vtkOutlineFilter.newInstance();
-  const bbMapper = vtkMapper.newInstance();
-  const bbActor = vtkActor.newInstance();
-  bbBounds.setInputData(bbPolyData);
-  bbMapper.setInputConnection(bbBounds.getOutputPort());
-  bbActor.setMapper(bbMapper);
-  renderer.addActor(bbActor);
+  const prop = vtkProperty.newInstance();
+  prop.setDiffuseColor(0,1,1);
+  prop.setOpacity(1);
+  actor.setProperty(prop);
+  mapper.setInputData(source);
+  render.addActor(actor);
+}
+
+function toggleShoreline() {
+// should only be one
+  const actor = shoreline_scene[0].actor;
+  const visibility = actor.getVisibility();
+  actor.setVisibility(!visibility);
 }
 
 function majorAxis(vec3, idxA, idxB) {
@@ -103,7 +108,6 @@ function reset2North(direction) {
   activeCamera.setPosition(0,0,1);
   activeCamera.setViewUp(0,1,0);
   activeCamera.setFocalPoint(0,0,0);
-  renderer.resetCamera();
 
   const viewUp = activeCamera.getViewUp();
   const focalPoint = activeCamera.getFocalPoint();
@@ -127,8 +131,8 @@ function reset2North(direction) {
   if (direction[2]) {
     activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
   }
-  renderer.resetCamera();
   orientationWidget.updateMarkerOrientation();
+  renderer.resetCamera();
   renderWindow.render();
 }
 
@@ -144,7 +148,7 @@ function onClick(event) {
   } else {
     el.classList.add('visible');
   }
-  render();
+  renderWindow.render();
 }
 
 // https://s3-us-west-2.amazonaws.com/files.scec.org/s3fs-public/projects/cfm/CFM5/CFM52_preferred/500m/CRFA-BPPM-WEST-Big_Pine_fault-CFM2_m500.ts
@@ -187,17 +191,26 @@ function nextValue() {
     return (Math.round((x - Math.floor(x))*1000)/1000);
 }
  
+// 0, surface - edge
+// 1, wire
+// 2, surface + edge
 var toWire=0;
 function toggleRepresentation() {
-  toWire = !toWire;
+  toWire = ( toWire + 1 ) % 3;
   scene.forEach((item, idx) => {
     var ii=item;
     var actor=item.actor;
     var prop = actor.getProperty();
-    if( toWire) {
-      setRepresentationToWireframe(prop);
-      } else {
-        setRepresentationToSurface(prop);
+    switch (toWire) {
+       case 0:
+         setRepresentationToSurface(prop);
+         break;
+       case 1:
+         setRepresentationToWireframe(prop);
+         break;
+       case 2:
+         setRepresentationToSurfaceWithEdge(prop);
+         break;
     }
   })
   renderWindow.render();
@@ -205,10 +218,18 @@ function toggleRepresentation() {
 
 function setRepresentationToWireframe(property) {
    property.setRepresentationToWireframe();
+   property.setEdgeVisibility(0);
 }
 
 function setRepresentationToSurface(property) {
    property.setRepresentationToSurface();
+   property.setEdgeVisibility(0);
+}
+
+function setRepresentationToSurfaceWithEdge(property) {
+   property.setRepresentationToSurface();
+   property.setEdgeVisibility(1);
+   property.setEdgeColor(0,0,0);
 }
 
 function setRepresentationToPoints(property) {
@@ -286,8 +307,6 @@ function emptyContainer(container) {
 }
 
 function loadZipContent(zipContent) {
-  const renderer = fullScreenRenderer.getRenderer();
-  const renderWindow = fullScreenRenderer.getRenderWindow();
   const fileContents = { ts: {} };
   const zip = new JSZip();
   zip.loadAsync(zipContent).then(() => {
@@ -318,17 +337,16 @@ function loadZipContent(zipContent) {
             scene.push({ name, source, mapper, actor });
 
 // color
-    const prop = vtkProperty.newInstance();
-    setInitialColor(prop);
-    prop.setOpacity(0.8);
-    actor.setProperty(prop);
+            const prop = vtkProperty.newInstance();
+            setInitialColor(prop);
+            prop.setOpacity(0.8);
+            actor.setProperty(prop);
 
             actor.setMapper(mapper);
             mapper.setInputData(source);
             renderer.addActor(actor);
           }
         });
-        buildOrientationMarker();
         buildControlLegend();
         renderer.resetCamera();
         renderWindow.render();
@@ -357,8 +375,6 @@ function Decodeuint8arr(uint8array){
 
 
 function loadTSContent(bgIndex, tsContent, name) {
-  const renderer = fullScreenRenderer.getRenderer();
-  const renderWindow = fullScreenRenderer.getRenderWindow();
   const tsReader = vtkTSReader.newInstance();
   let tsContentString=Decodeuint8arr(tsContent);
   tsReader.parseAsText(tsContentString);
@@ -382,30 +398,9 @@ window.console.log("loadingTS..",name);
     actor.setMapper(mapper);
     mapper.setInputData(source);
     renderer.addActor(actor);
-    let dataset = mapper.getInputData();
-    let bounds = dataset.getBounds();
-    debug_printBB("dataset",bounds);
-    if(bgIndex == 0) {
-       track_bb=bounds;
-    }
   }
-  buildOrientationMarker();
   buildControlLegend();
   
-  let rbounds=renderer.computeVisiblePropBounds();
-  debug_printBB("renderer",rbounds);
-
-//X  addBoundingBox(rbounds);
-
-/*
-  if(bgIndex != 0) {
-    window.console.log("clipping..",bgIndex);
-//    renderer.resetCameraClippingRange(track_bb);
-    } else {
-      renderer.resetCamera();
-  }
-*/
-
   renderer.resetCamera();
   renderWindow.render();
 
@@ -423,6 +418,7 @@ export function load(container, options) {
 
   renderer = fullScreenRenderer.getRenderer();
   renderWindow = fullScreenRenderer.getRenderWindow();
+  activeCamera = renderer.getActiveCamera();
 
   if (options.file) {
     if (options.ext === 'ts') {
@@ -439,16 +435,15 @@ export function load(container, options) {
           scene.push({ name, source, mapper, actor });
 
 // color
-    const prop = vtkProperty.newInstance();
-    setInitialColor(prop);
-    prop.setOpacity(0.8);
-    actor.setProperty(prop);
+          const prop = vtkProperty.newInstance();
+          setInitialColor(prop);
+          prop.setOpacity(0.8);
+          actor.setProperty(prop);
 
           actor.setMapper(mapper);
           mapper.setInputData(source);
           renderer.addActor(actor);
         }
-        buildOrientationMarker();
         buildControlLegend();
         renderer.resetCamera();
         renderWindow.render();
@@ -526,7 +521,7 @@ export function load(container, options) {
   }// fileURL
 }
 
-export function initLocalFileLoader(container) {
+export function autoInitLocalFileLoader(container) {
   const exampleContainer = document.querySelector('.content');
   const rootBody = document.querySelector('body');
   const myContainer = container || exampleContainer || rootBody;
@@ -566,8 +561,8 @@ export function initLocalFileLoader(container) {
 }
 
 function buildOrientationMarker() {
-  activeCamera=renderer.getActiveCamera();
-  const axes = vtkAxesActor.newInstance();
+
+  const axes = vtkGeoAxesActor.newInstance();
   orientationWidget = vtkOrientationMarkerWidget.newInstance({
     actor: axes,
     interactor: renderWindow.getInteractor(),
@@ -579,13 +574,64 @@ function buildOrientationMarker() {
   orientationWidget.setViewportSize(0.20);
   orientationWidget.setMinPixelSize(100);
   orientationWidget.setMaxPixelSize(300);
-  
-  debug_printCamera("initial setup",activeCamera);
-  
+
+// ----------------------------------------------------------------------------
+// Widget manager
+// ----------------------------------------------------------------------------
+
+  const widgetManager = vtkWidgetManager.newInstance();
+  widgetManager.setRenderer(orientationWidget.getRenderer());
+
+  const widget = vtkInteractiveOrientationWidget.newInstance();
+  widget.placeWidget(axes.getBounds());
+  widget.setBounds(axes.getBounds());
+  widget.setPlaceFactor(1);
+
+  const vw = widgetManager.addWidget(widget);
+
+// Manage user interaction
+vw.onOrientationChange(({ up, direction0, action, event }) => {
+
+  let direction=[0,1,0];
+
+  activeCamera.setPosition(0,0,1);
+  activeCamera.setViewUp(0,1,0);
+  activeCamera.setFocalPoint(0,0,0);
+
+  const viewUp = activeCamera.getViewUp();
+  const focalPoint = activeCamera.getFocalPoint();
+  const position = activeCamera.getPosition();
+
+  const distance = Math.sqrt(
+    vtkMath.distance2BetweenPoints(position, focalPoint)
+  );
+  activeCamera.setPosition(
+    focalPoint[0] + direction[0] * distance,
+    focalPoint[1] + direction[1] * distance,
+    focalPoint[2] + direction[2] * distance
+  );
+
+  if (direction[0]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 1, 2));
+  }
+  if (direction[1]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 2));
+  }
+  if (direction[2]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
+  }
+
+  renderer.resetCamera();
+  orientationWidget.updateMarkerOrientation();
+  widgetManager.enablePicking();
+  renderWindow.render();
+});
+
   renderer.resetCamera();
   renderWindow.render();
 }
 
+// iterating mulitple times as data increases
 function buildControlLegend() {
   const htmlBuffer = [
     '<style>.visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;}</style>',
@@ -646,9 +692,12 @@ function toggleLegend() {
 }
 
 function toggleNorth() {
-  debug_printCamera("before snap");
+//  debug_printCamera("before snap");
   reset2North([0,1,0]);
-  debug_printCamera("after snap");
+//  debug_printCamera("after snap");
+  renderWindow.render();
+  //addShoreline();
+  const tmp=renderer.getActors();
 }
 
 // MAIN 
@@ -663,6 +712,8 @@ if (userParams.file || userParams.fileURL) {
     rootBody.style.padding = '0';
   }
   load(myContainer, userParams);
+  buildOrientationMarker();
+  toggleNorth();
 }
 
 renderer.resetCamera();
@@ -671,7 +722,9 @@ renderWindow.render();
 // Auto setup if no method get called within 100ms
 setTimeout(() => {
   if (autoInit) {
-    initLocalFileLoader();
+    autoInitLocalFileLoader();
+    buildOrientationMarker();
+    toggleNorth();
   }
 }, 100);
 
@@ -687,3 +740,4 @@ global.changeColor = changeColor;
 global.toggleRepresentation = toggleRepresentation;
 global.scene = scene;
 global.fullScreenRenderer = fullScreenRenderer;
+
