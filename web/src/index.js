@@ -1,4 +1,4 @@
-
+ 
 /* ts viewer */
 
 /*NOTE: zip fileURL input with background ts is not implemented */
@@ -34,6 +34,8 @@ import vtkPoints from 'vtk.js/Sources/Common/Core/Points';
 import vtkPointSet from 'vtk.js/Sources/Common/DataModel/PointSet';
 import vtkPolyData from 'vtk.js/Sources/Common/DataModel/PolyData';
 
+import vtkGMTReader from 'vtk.js/Sources/IO/Geometry/GMTReader';
+
 import style from './TSViewer.module.css';
 
 const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
@@ -43,13 +45,23 @@ var fileCount = 0;
 var fileIdx = 0;
 
 /** housekeeping on actor **/
+// 3D actor for each fault line, one per tsurf file,
 // scene.push({ name, source/polydata, mapper, actor });
 const scene = [];
-// shoreline_scene.push({ name, source/polydata, mapper, actor });
-const shoreline_scene = [];
-// bounds_scene.push({name, outline,mapper, actor})
+
+// California shoreline actor from GMAT file
+// coast_scene.push({ name, source/polydata, mapper, actor });
+const coast_scene = [];
+
+// fault trace/blind, from GMAT file, could have multiple traces with
+// duplicate fault names
+// trace_scene.push({ name, source/polydata, mapper, actor });
+const trace_scene = [];
+const blind_scene = [];
+
+// bounding box, one  per fault line
 const bounds_scene = [];
-// final_bounds_scene.push({'master', outline, mapper, actor });
+// overall bounding box, final_bounds_scene.push({'master', outline, mapper, actor });
 const final_bounds_scene = [];
 
 // need to expose at the top level
@@ -59,6 +71,9 @@ var renderWindow;
 var orientationWidget;
 var activeCamera;
 var boundingBox;
+
+var faultList=[];
+var actorList=[];
 
 /***
   MISC
@@ -77,7 +92,6 @@ function debug_printCamera(note) {
   window.console.log("  focal    "+focal.toString());
   window.console.log("  viewMatrix    "+vmatrix.toString());
 }
-
 
 function onClick(event) {
   const el = event.target;
@@ -104,6 +118,15 @@ function trim4Name(fname) {
    var dname=fname.substring(fname.lastIndexOf('/')+1);
    var nname=dname.substring(0,dname.lastIndexOf('.'));
 
+// WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5
+// WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5_m500
+   var teststr=nname.substring(nname.lastIndexOf("-"));
+   var sname=nname;
+   if(teststr.includes('_')) {
+     sname=dname.substring(0,nname.lastIndexOf("_"));
+   }
+   faultList.push(sname);
+
    // trim abb and ext
    var n = nname.split('-');
    var idx=nname.lastIndexOf('-')+1;
@@ -125,35 +148,178 @@ function trim4Name(fname) {
 
 
 /***
-  SHORELINE + SURFACE FAULT
+  SHORELINE + SURFACE TRACES
 ***/
+function loadGMTContent(gmtContent, gtype) {
+  const gmtReader = vtkGMTReader.newInstance();
+  let gmtContentString=Decodeuint8arr(gmtContent);
+  gmtReader.parseAsText(gmtContentString);
+  const nbOutputs = gmtReader.getNumberOfOutputPorts();
 
-function addShoreline() {
-  if(shoreline_scene.length > 0) {
+  window.console.log("loadingGMT..",nbOutputs);
+  for (let idx = 0; idx < nbOutputs; idx++) {
+    const source = gmtReader.getOutputData(idx); // polydata
+    const name = source.get('name').name;
+    const mapper = vtkMapper.newInstance();
+    const actor = vtkActor.newInstance();
+
+    const prop = vtkProperty.newInstance();
+    prop.setLineWidth(600);
+    prop.setOpacity(1);
+
+    switch (gtype) {
+      case 'blind':
+         blind_scene.push({ name, source, mapper, actor });
+         prop.setColor(0.1,1,0.1); 
+         break;
+      case 'trace':
+         trace_scene.push({ name, source, mapper, actor });
+         prop.setColor(1,0.1,1); 
+         break;
+      case 'coast':
+         coast_scene.push({ name, source, mapper, actor });
+         prop.setColor(0,0.5,1); 
+         break;
+    }
+
+    actor.setProperty(prop);
+    actor.setVisibility(0); // not visible to start
+
+    actor.setMapper(mapper);
+    mapper.setInputData(source);
+    renderer.addActor(actor);
+  }
+}
+
+
+function retrieveSurfaceTraces(container) {
+  const blind_file="cfm_data/CFM5.2_blind.utm"
+  const trace_file="cfm_data/CFM5.2_traces.utm"
+
+  const progressContainer = document.createElement('div');
+  progressContainer.setAttribute('class', style.progress);
+  container.appendChild(progressContainer);
+
+  const progressCallback = (progressEvent) => {
+        if (progressEvent.lengthComputable) {
+          const percent = Math.floor(
+            (100 * progressEvent.loaded) / progressEvent.total
+          );
+          progressContainer.innerHTML = `Loading ${percent}%`;
+        } else {
+          progressContainer.innerHTML = macro.formatBytesToProperUnit(
+            progressEvent.loaded
+          );
+        }
+  };
+
+  HttpDataAccessHelper.fetchBinary(blind_file, {
+        progressCallback,
+    }).then((content) => {
+      container.removeChild(progressContainer);
+      loadGMTContent(content, 'blind');
+  });
+
+  const progressContainer2 = document.createElement('div');
+  progressContainer2.setAttribute('class', style.progress);
+  container.appendChild(progressContainer2);
+
+  const progressCallback2 = (progressEvent) => {
+    if (progressEvent.lengthComputable) {
+      const percent = Math.floor(
+        (100 * progressEvent.loaded) / progressEvent.total
+      );
+      progressContainer2.innerHTML = `Loading ${percent}%`;
+    } else {
+      progressContainer2.innerHTML = macro.formatBytesToProperUnit(
+        progressEvent.loaded
+      );
+    }
+  };
+
+  HttpDataAccessHelper.fetchBinary(trace_file, {
+        progressCallback2,
+    }).then((content) => {
+      container.removeChild(progressContainer2);
+      loadGMTContent(content, 'trace');
+  });
+}
+
+function collectTraceAndFault()
+{
+  const cnt=faultList.length;
+  for(let i=0;i<cnt;i++) {
+    const name=faultList[i];
+    trace_scene.forEach((item, idx) => {
+      let n=item.name; 
+      if(n == name)  {
+        let actor=item.actor;
+        actorList.push(actor);
+      }
+    });
+    blind_scene.forEach((item, idx) => {
+      let n=item.name; 
+      if(n == name)  {
+        let actor=item.actor;
+        actorList.push(actor);
+      }
+    });
+  }
+}
+
+function toggleTraceAndFault() 
+{
+  const cnt=actorList.length;
+  if(cnt == 0)
+    return;
+  actorList.forEach((item, idx) => {
+    let vis=item.getVisibility();
+    item.setVisibility(!vis);
+  });
+  renderWindow.render();
+}
+
+function retrieveShoreline(container) {
+  if(coast_scene.length > 0) {
     return;
   }
-  window.console.log("add shoreline ");
-  const name="California shoreline";
-  const polydata = vtkPolyData.newInstance();
-//XXXX  fill-in in polydata
-  const source=polydata.getOutputData();
-  const mapper = vtkMapper.newInstance();
-  const actor = vtkActor.newInstance();
-  shoreline_scene.push({ name, source, mapper, actor });
+  const coast_file="cfm_data/coast.utm"
 
-  const prop = vtkProperty.newInstance();
-  prop.setDiffuseColor(0,1,1);
-  prop.setOpacity(1);
-  actor.setProperty(prop);
-  mapper.setInputData(source);
-  render.addActor(actor);
+  const progressContainer = document.createElement('div');
+  progressContainer.setAttribute('class', style.progress);
+  container.appendChild(progressContainer);
+
+  const progressCallback = (progressEvent) => {
+     if (progressEvent.lengthComputable) {
+        const percent = Math.floor(
+            (100 * progressEvent.loaded) / progressEvent.total
+        );
+        progressContainer.innerHTML = `Loading ${percent}%`;
+        } else {
+          progressContainer.innerHTML = macro.formatBytesToProperUnit(
+            progressEvent.loaded
+          );
+     }
+  };
+
+  HttpDataAccessHelper.fetchBinary(coast_file, {
+        progressCallback,
+    }).then((content) => {
+      container.removeChild(progressContainer);
+      loadGMTContent(content, 'coast');
+  });
 }
 
 function toggleShoreline() {
-// should only be one
-  const actor = shoreline_scene[0].actor;
-  const visibility = actor.getVisibility();
-  actor.setVisibility(!visibility);
+  if(coast_scene.length < 0)
+    return;
+
+  coast_scene.forEach((item, idx) => {
+    const actor=item.actor;
+    const vis = actor.getVisibility();
+    actor.setVisibility(!vis);
+  });
+  renderWindow.render();
 }
 
 /***
@@ -204,12 +370,10 @@ function reset2North(direction) {
 function toggleNorth() {
   reset2North([0,1,0]);
   renderWindow.render();
-
 }
 
 function buildOrientationMarker() {
 
-  window.console.log("buiding -- orientation marker");
   const axes = vtkGeoAxesActor.newInstance();
   orientationWidget = vtkOrientationMarkerWidget.newInstance({
     actor: axes,
@@ -240,7 +404,7 @@ function buildOrientationMarker() {
 // Manage user interaction
 vw.onOrientationChange(({ up, direction0, action, event }) => {
 
-  let direction=[0,1,0];
+  let direction=[0,0,1];
 
   activeCamera.setPosition(0,0,1);
   activeCamera.setViewUp(0,1,0);
@@ -328,7 +492,6 @@ function setRepresentationToPoints(property) {
 }
 
 
-
 /***
   COLOR
 ***/
@@ -349,12 +512,12 @@ function setInitialColor(property) {
    let Rc=nextValue();
    let Rg=nextValue();
    let Rb=nextValue();
-   property.setDiffuseColor(Rc,Rg,Rb);
+   property.setColor(Rc,Rg,Rb);
 }
 
 function getColor(actor) {
    var prop = actor.getProperty();
-   var color = prop.getDiffuseColor();
+   var color = prop.getColor();
    var Rc=color[0];
    var Rg=color[1];
    var Rb=color[2];
@@ -377,7 +540,7 @@ function rgbToHex(r, g, b) {
 
 function getHexColor(actor) {
    var prop = actor.getProperty();
-   var color = prop.getDiffuseColor();
+   var color = prop.getColor();
    var Rc=color[0];
    var Rg=color[1];
    var Rb=color[2];
@@ -404,7 +567,6 @@ function getOpacity(actor) {
 }
 
 function changeOpacity(idx,opacity) {
-  window.console.log("Call changeOpacity..",idx," and ", opacity);
   const actor = scene[idx].actor;
   var prop = actor.getProperty();
   prop.setOpacity(opacity);
@@ -417,11 +579,8 @@ function changeOpacity(idx,opacity) {
 
 // bounding box =[xMin, xMax, yMin, yMax, zMin, zMax]
 function addFinalBoundingBox() {
-  window.console.log("show final bounding box");
-
   const outline = vtkOutlineFilter.newInstance();
   const bb=boundingBox.getBounds();
-  window.console.log("bb", bb.toString());
   outline.setInputData(boundingBox);
 
   const mapper = vtkMapper.newInstance();
@@ -429,7 +588,7 @@ function addFinalBoundingBox() {
 
   const actor = vtkActor.newInstance();
   actor.setMapper(mapper);
-  actor.getProperty().set({ lineWidth: 20 , color: [1,0,0] });
+  actor.getProperty().set({ lineWidth: 10 , color: [1,0.2,0]});
   renderer.addActor(actor);
   const name='name';
   final_bounds_scene.push({name, outline,mapper, actor});
@@ -450,7 +609,7 @@ function addBoundingBox(data,name) {
   const actor = vtkActor.newInstance();
   actor.setMapper(mapper);
   actor.setVisibility(0);
-  actor.getProperty().set({ lineWidth: 15, color: [0.80,0.83,0.85] });
+  actor.getProperty().set({ lineWidth: 10, color: [0.80,0.83,0.85] });
   renderer.addActor(actor);
   bounds_scene.push({name, outline,mapper, actor});
 
@@ -494,7 +653,6 @@ function setBoundsToAll() {
 
 function setBoundsToNone() {
   let actor=final_bounds_scene[0].actor;
-  const visibility = actor.getVisibility();
   actor.setVisibility(0);
   bounds_scene.forEach((item, idx) => {
     actor=item.actor;
@@ -512,7 +670,6 @@ function setBoundsToNone() {
 
 // iterating mulitple times as data increases
 function buildControlLegend() {
-  window.console.log("buildControlLegend..");
   const htmlBuffer = [
     '<style>.visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;}</style>',
     ];
@@ -527,6 +684,12 @@ function buildControlLegend() {
     );
   htmlBuffer.push(
     `<button id="Reprbtn" type="button" title="switch Repr" onClick="toggleRepresentation()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Tracebtn" type="button" title="toggle trace" onClick="toggleTraceAndFault()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Shorebtn" type="button" title="toggle coastline" onClick="toggleShoreline()" style='display:none;'></button>`
     );
   htmlBuffer.push(
     `<table><thead><tr class=size-row" aria-hidden="true"></tr></thead>`);
@@ -569,7 +732,7 @@ function changeColor(idx, hex_color) {
 
   const actor = scene[idx].actor;
   var property = actor.getProperty();
-  property.setDiffuseColor(nr,ng,nb);
+  property.setColor(nr,ng,nb);
   renderWindow.render();
 }
 
@@ -666,13 +829,12 @@ function Decodeuint8arr(uint8array){
 }
 
 
-function loadTSContent(bgIndex, tsContent, name) {
+function loadTSContent(tsContent, name) {
   const tsReader = vtkTSReader.newInstance();
   let tsContentString=Decodeuint8arr(tsContent);
   tsReader.parseAsText(tsContentString);
   const nbOutputs = tsReader.getNumberOfOutputPorts();
 
-window.console.log("loadingTS..",name);
   fileIdx++;
   for (let idx = 0; idx < nbOutputs; idx++) {
     const source = tsReader.getOutputData(idx);
@@ -699,6 +861,9 @@ window.console.log("loadingTS..",name);
   renderWindow.render();
   if(fileIdx == fileCount) {
     addFinalBoundingBox();
+    collectTraceAndFault();
+    toggleTraceAndFault();
+    toggleShoreline();
   }
 }
 
@@ -716,6 +881,11 @@ export function load(container, options) {
   renderWindow = fullScreenRenderer.getRenderWindow();
   activeCamera = renderer.getActiveCamera();
   boundingBox = vtkBoundingBox.newInstance();
+  faultList=[];
+  actorList=[];
+
+  retrieveSurfaceTraces(container);
+  retrieveShoreline(container);
 
   if (options.file) {
     if (options.ext === 'ts') {
@@ -753,8 +923,8 @@ export function load(container, options) {
     }
   } else if (options.fileURL) {
 
-    function retrieveFileContent(bgIndex, fname, name) {
-      window.console.log("retrieve, fname>>",fname);
+    function retrieveFileContent(fname, name) {
+      window.console.log("retrieveFileContent, fname>>",fname);
 
       const ext = fname.substr((fname.lastIndexOf('.') + 1));
       const progressContainer = document.createElement('div');
@@ -779,7 +949,7 @@ export function load(container, options) {
       }).then((content) => {
         container.removeChild(progressContainer);
         if(ext === 'ts') {  // plain ts file
-           loadTSContent(bgIndex,content, name);
+           loadTSContent(content, name);
            } else { 
              loadZipContent(content);
         }
@@ -790,13 +960,11 @@ export function load(container, options) {
 // or fileURL=f1
     let op=options.fileURL;
     let path=options.filePATH;
-    let bg=options.background;
-    let bg_handle=0; // if there is a shore ts file, let it be the last
     if(typeof op === 'string') {
         if(path) {
-          retrieveFileContent(bg_handle, path+op, trim4Name(op));
+          retrieveFileContent(path+op, trim4Name(op));
           } else {
-            retrieveFileContent(bg_handle, op, trim4Name(op));
+            retrieveFileContent(op, trim4Name(op));
         }
         } else {
           let cnt=op.length;
@@ -805,15 +973,10 @@ export function load(container, options) {
             if(path) {
               f=path+f;
             }
-            if(bg) { 
-              if(i == cnt-1) {
-                bg_handle= cnt-1;
-              }
-            }
             if(options.name) {
-              retrieveFileContent(bg_handle,f,options.name[i]);
+              retrieveFileContent(f,options.name[i]);
               } else {
-                retrieveFileContent(bg_handle,f,trim4Name(op[i]));
+                retrieveFileContent(f,trim4Name(op[i]));
             }
           }
      }
@@ -868,7 +1031,6 @@ if (userParams.file || userParams.fileURL) {
   const exampleContainer = document.querySelector('.content');
   const rootBody = document.querySelector('body');
   const myContainer = exampleContainer || rootBody;
-  window.console.log("ABC",userParams.fileURL.length);
   fileCount=userParams.fileURL.length;
   if (myContainer) {
     myContainer.classList.add(style.fullScreen);
@@ -906,6 +1068,8 @@ global.toggleLegend = toggleLegend;
 global.changeColor = changeColor;
 global.changeOpacity = changeOpacity;
 global.toggleRepresentation = toggleRepresentation;
+global.toggleTraceAndFault = toggleTraceAndFault;
+global.toggleShoreline = toggleShoreline;
 global.scene = scene;
 global.fullScreenRenderer = fullScreenRenderer;
 
