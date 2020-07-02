@@ -58,6 +58,10 @@ const coast_scene = [];
 // trace_scene.push({ name, source/polydata, mapper, actor });
 const trace_scene = [];
 const blind_scene = [];
+const blind2_scene = [];
+
+var GMT_cnt=0;
+var toggled;
 
 // bounding box, one  per fault line
 const bounds_scene = [];
@@ -74,6 +78,13 @@ var boundingBox;
 
 var faultList=[];
 var actorList=[];
+var activeActorList=[];
+
+// to track the original Camera View
+var initialCameraView;
+var initialPosition;
+var initialFocalPoint;
+var initialViewUp;
 
 /***
   MISC
@@ -156,7 +167,6 @@ function loadGMTContent(gmtContent, gtype) {
   gmtReader.parseAsText(gmtContentString);
   const nbOutputs = gmtReader.getNumberOfOutputPorts();
 
-  window.console.log("loadingGMT..",nbOutputs);
   for (let idx = 0; idx < nbOutputs; idx++) {
     const source = gmtReader.getOutputData(idx); // polydata
     const name = source.get('name').name;
@@ -168,12 +178,22 @@ function loadGMTContent(gmtContent, gtype) {
     prop.setOpacity(1);
 
     switch (gtype) {
+      case 'blind2':
+         blind_scene.push({ name, source, mapper, actor });
+         actorList.push(actor);
+// XXX
+         prop.setRepresentationToPoints();
+         prop.setPointSize(1);
+         prop.setColor(1,1,1); 
+         break;
       case 'blind':
          blind_scene.push({ name, source, mapper, actor });
-         prop.setColor(0.1,1,0.1); 
+         actorList.push(actor);
+         prop.setColor(0.8,0.1,0.1); 
          break;
       case 'trace':
          trace_scene.push({ name, source, mapper, actor });
+         actorList.push(actor);
          prop.setColor(1,0.1,1); 
          break;
       case 'coast':
@@ -183,11 +203,19 @@ function loadGMTContent(gmtContent, gtype) {
     }
 
     actor.setProperty(prop);
-    actor.setVisibility(0); // not visible to start
-
+    actor.setVisibility(0);
     actor.setMapper(mapper);
     mapper.setInputData(source);
     renderer.addActor(actor);
+  }
+  window.console.log("loadingGMT..",nbOutputs);
+  GMT_cnt++;
+  if(GMT_cnt == 4 && toggled == undefined) {
+    if(final_bounds_scene.length > 0 ) {
+      toggled=true;
+      toggleTraceAndFault(); 
+      toggleShoreline();
+    }
   }
 }
 
@@ -196,56 +224,16 @@ function retrieveSurfaceTraces(container) {
   const blind_file="cfm_data/CFM5.2_blind.utm"
   const trace_file="cfm_data/CFM5.2_traces.utm"
 
-  const progressContainer = document.createElement('div');
-  progressContainer.setAttribute('class', style.progress);
-  container.appendChild(progressContainer);
-
-  const progressCallback = (progressEvent) => {
-        if (progressEvent.lengthComputable) {
-          const percent = Math.floor(
-            (100 * progressEvent.loaded) / progressEvent.total
-          );
-          progressContainer.innerHTML = `Loading ${percent}%`;
-        } else {
-          progressContainer.innerHTML = macro.formatBytesToProperUnit(
-            progressEvent.loaded
-          );
-        }
-  };
-
-  HttpDataAccessHelper.fetchBinary(blind_file, {
-        progressCallback,
-    }).then((content) => {
-      container.removeChild(progressContainer);
+  HttpDataAccessHelper.fetchBinary(blind_file, {}).then((content) => {
       loadGMTContent(content, 'blind');
+      loadGMTContent(content, 'blind2');
   });
-
-  const progressContainer2 = document.createElement('div');
-  progressContainer2.setAttribute('class', style.progress);
-  container.appendChild(progressContainer2);
-
-  const progressCallback2 = (progressEvent) => {
-    if (progressEvent.lengthComputable) {
-      const percent = Math.floor(
-        (100 * progressEvent.loaded) / progressEvent.total
-      );
-      progressContainer2.innerHTML = `Loading ${percent}%`;
-    } else {
-      progressContainer2.innerHTML = macro.formatBytesToProperUnit(
-        progressEvent.loaded
-      );
-    }
-  };
-
-  HttpDataAccessHelper.fetchBinary(trace_file, {
-        progressCallback2,
-    }).then((content) => {
-      container.removeChild(progressContainer2);
+  HttpDataAccessHelper.fetchBinary(trace_file, {}).then((content) => {
       loadGMTContent(content, 'trace');
   });
 }
 
-function collectTraceAndFault()
+function collectActiveTraceAndFault()
 {
   const cnt=faultList.length;
   for(let i=0;i<cnt;i++) {
@@ -254,29 +242,34 @@ function collectTraceAndFault()
       let n=item.name; 
       if(n == name)  {
         let actor=item.actor;
-        actorList.push(actor);
+        activeActorList.push(actor);
       }
     });
     blind_scene.forEach((item, idx) => {
       let n=item.name; 
       if(n == name)  {
         let actor=item.actor;
-        actorList.push(actor);
+        activeActorList.push(actor);
       }
     });
   }
 }
 
+
 function toggleTraceAndFault() 
 {
   const cnt=actorList.length;
-  if(cnt == 0)
+  if(cnt == 0) {
+    window.console.log("ERROR: trace list is empty");
     return;
-  actorList.forEach((item, idx) => {
+  }
+  for(let i=0;i<cnt; i++) {
+    let item=actorList[i];
     let vis=item.getVisibility();
     item.setVisibility(!vis);
-  });
+  };
   renderWindow.render();
+  window.console.log("toggleTraceAndFault");
 }
 
 function retrieveShoreline(container) {
@@ -285,41 +278,26 @@ function retrieveShoreline(container) {
   }
   const coast_file="cfm_data/coast.utm"
 
-  const progressContainer = document.createElement('div');
-  progressContainer.setAttribute('class', style.progress);
-  container.appendChild(progressContainer);
-
-  const progressCallback = (progressEvent) => {
-     if (progressEvent.lengthComputable) {
-        const percent = Math.floor(
-            (100 * progressEvent.loaded) / progressEvent.total
-        );
-        progressContainer.innerHTML = `Loading ${percent}%`;
-        } else {
-          progressContainer.innerHTML = macro.formatBytesToProperUnit(
-            progressEvent.loaded
-          );
-     }
-  };
-
-  HttpDataAccessHelper.fetchBinary(coast_file, {
-        progressCallback,
-    }).then((content) => {
-      container.removeChild(progressContainer);
+  HttpDataAccessHelper.fetchBinary(coast_file, {}).then((content) => {
       loadGMTContent(content, 'coast');
   });
 }
 
 function toggleShoreline() {
-  if(coast_scene.length < 0)
+  let cnt=coast_scene.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: shoreline is empty");
     return;
+  }
 
-  coast_scene.forEach((item, idx) => {
-    const actor=item.actor;
-    const vis = actor.getVisibility();
+  for(let i=0; i<cnt; i++) {
+    let item=coast_scene[i]; 
+    let actor=item.actor;
+    let vis = actor.getVisibility();
     actor.setVisibility(!vis);
-  });
+  };
   renderWindow.render();
+  window.console.log("toggleShorline");
 }
 
 /***
@@ -363,6 +341,24 @@ function reset2North(direction) {
     activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
   }
   orientationWidget.updateMarkerOrientation();
+  renderer.resetCamera();
+  renderWindow.render();
+}
+
+function retrieveInitialCameraView() {
+  initialPosition=activeCamera.getPosition();
+  initialFocalPoint=activeCamera.getFocalPoint();
+  initialViewUp=activeCamera.getViewUp();
+  initialCameraView === activeCamera.getViewMatrix();
+}
+
+function resetInitialCameraView() {
+  if( initialCameraView === undefined ) {
+    return;
+  }
+  activeCamera.setPosition(initialPosition[0], initialPosition[1], initialPosition[2]);
+  activeCamera.setFocalPoint(initialFocalPoint[0], initialFocalPoint[1], initialFocalPoint[2]);
+  activeCamera.setViewUp(initialViewUp[0], initialViewUp[1], initialViewUp[2]);
   renderer.resetCamera();
   renderWindow.render();
 }
@@ -595,7 +591,7 @@ function addFinalBoundingBox() {
 
   renderer.resetCamera();
   renderWindow.render();
-
+  window.console.log("added final bounding box");
 }
 
 function addBoundingBox(data,name) {
@@ -856,14 +852,17 @@ function loadTSContent(tsContent, name) {
     renderer.addActor(actor);
   }
   buildControlLegend();
+  window.console.log("loadTSContent..",name);
   
   renderer.resetCamera();
   renderWindow.render();
   if(fileIdx == fileCount) {
     addFinalBoundingBox();
-    collectTraceAndFault();
-    toggleTraceAndFault();
-    toggleShoreline();
+    if(toggled === undefined && GMT_cnt == 4) {
+      toggled=true;
+      toggleTraceAndFault(); 
+      toggleShoreline();
+    }
   }
 }
 
@@ -1038,6 +1037,7 @@ if (userParams.file || userParams.fileURL) {
     rootBody.style.padding = '0';
   }
   load(myContainer, userParams);
+  window.console.log("done calling load()");
   buildOrientationMarker();
   toggleNorth();
 }
