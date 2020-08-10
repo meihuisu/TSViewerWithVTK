@@ -58,7 +58,6 @@ const coast_scene = [];
 // trace_scene.push({ name, source/polydata, mapper, actor });
 const trace_scene = [];
 const blind_scene = [];
-const blind2_scene = [];
 
 var GMT_cnt=0;
 var toggled;
@@ -104,7 +103,7 @@ function debug_printCamera(note) {
   window.console.log("  viewMatrix    "+vmatrix.toString());
 }
 
-function onClick(event) {
+function onVisClick(event) {
   const el = event.target;
   const index = Number(el.dataset.index);
   const actor = scene[index].actor;
@@ -178,14 +177,6 @@ function loadGMTContent(gmtContent, gtype) {
     prop.setOpacity(1);
 
     switch (gtype) {
-      case 'blind2':
-         blind_scene.push({ name, source, mapper, actor });
-         actorList.push(actor);
-// XXX
-         prop.setRepresentationToPoints();
-         prop.setPointSize(1);
-         prop.setColor(1,1,1); 
-         break;
       case 'blind':
          blind_scene.push({ name, source, mapper, actor });
          actorList.push(actor);
@@ -210,7 +201,7 @@ function loadGMTContent(gmtContent, gtype) {
   }
   window.console.log("loadingGMT..",nbOutputs);
   GMT_cnt++;
-  if(GMT_cnt == 4 && toggled == undefined) {
+  if(GMT_cnt == 3 && toggled == undefined) {
     if(final_bounds_scene.length > 0 ) {
       toggled=true;
       toggleTraceAndFault(); 
@@ -226,7 +217,6 @@ function retrieveSurfaceTraces(container) {
 
   HttpDataAccessHelper.fetchBinary(blind_file, {}).then((content) => {
       loadGMTContent(content, 'blind');
-      loadGMTContent(content, 'blind2');
   });
   HttpDataAccessHelper.fetchBinary(trace_file, {}).then((content) => {
       loadGMTContent(content, 'trace');
@@ -368,6 +358,55 @@ function toggleNorth() {
   renderWindow.render();
 }
 
+function offTraceAndFault()
+{
+  const cnt=actorList.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: trace list is empty");
+    return 0;
+  }
+  // need to toggle off ?
+  let item=actorList[0];
+  let vis=item.getVisibility();
+  if(vis) {
+    toggleTraceAndFault();
+    return 1;
+    } else {
+      return 0;
+  }
+}
+
+function offShoreline() {
+  let cnt=coast_scene.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: shoreline is empty");
+    return 0;
+  }
+  let item=coast_scene[0];
+  let actor=item.actor;
+  let vis = actor.getVisibility();
+  if(vis) {
+    toggleShoreline();
+    return 1;
+    } else {
+      return 0;
+  }
+}
+
+function toggleNorthByBtn() {
+  var track_shore=offShoreline();
+  var track_trace=offTraceAndFault();
+  reset2North([0,1,0]);
+  // bring shore/trace back if had to hide them earlier
+  if(track_shore) {
+      toggleShoreline();
+  }
+  if(track_trace) {
+      toggleTraceAndFault();
+  }
+  renderWindow.render();
+}
+
 function buildOrientationMarker() {
 
   const axes = vtkGeoAxesActor.newInstance();
@@ -400,6 +439,9 @@ function buildOrientationMarker() {
 // Manage user interaction
 vw.onOrientationChange(({ up, direction0, action, event }) => {
 
+  var track_shore=offShoreline();
+  var track_trace=offTraceAndFault();
+
   let direction=[0,0,1];
 
   activeCamera.setPosition(0,0,1);
@@ -419,18 +461,17 @@ vw.onOrientationChange(({ up, direction0, action, event }) => {
     focalPoint[2] + direction[2] * distance
   );
 
-  if (direction[0]) {
-    activeCamera.setViewUp(majorAxis(viewUp, 1, 2));
-  }
-  if (direction[1]) {
-    activeCamera.setViewUp(majorAxis(viewUp, 0, 2));
-  }
   if (direction[2]) {
     activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
   }
 
   renderer.resetCamera();
   orientationWidget.updateMarkerOrientation();
+
+  // bring shore/trace back if had to hide them earlier
+  if(track_shore) { toggleShoreline(); }
+  if(track_trace) { toggleTraceAndFault(); }
+
   widgetManager.enablePicking();
   renderWindow.render();
 });
@@ -673,7 +714,7 @@ function buildControlLegend() {
     `<button id="Boundsbtn" type="button" title="show bounding boxes" onClick="toggleBounds()" style='display:none;'></button>`
     );
   htmlBuffer.push(
-    `<button id="Northbtn" type="button" title="reset view to North" onClick="toggleNorth()" style='display:none;'></button>`
+    `<button id="Northbtn" type="button" title="reset view to North" onClick="toggleNorthByBtn()" style='display:none;'></button>`
     );
   htmlBuffer.push(
     `<button id="Legendbtn" type="button" title="show Legend" onClick="toggleLegend()" style='display:none;'></button>`
@@ -711,7 +752,7 @@ function buildControlLegend() {
   const nodes = document.querySelectorAll('.click');
   for (let i = 0; i < nodes.length; i++) {
     const el = nodes[i];
-    el.onclick = onClick;
+    el.onclick = onVisClick;
   }
 }
 
@@ -858,7 +899,7 @@ function loadTSContent(tsContent, name) {
   renderWindow.render();
   if(fileIdx == fileCount) {
     addFinalBoundingBox();
-    if(toggled === undefined && GMT_cnt == 4) {
+    if(toggled === undefined && GMT_cnt == 3) {
       toggled=true;
       toggleTraceAndFault(); 
       toggleShoreline();
@@ -1063,7 +1104,7 @@ setTimeout(() => {
 global.fileCount = fileCount;
 global.fileIdx = fileIdx;
 global.toggleBounds = toggleBounds;
-global.toggleNorth = toggleNorth;
+global.toggleNorthByBtn = toggleNorthByBtn;
 global.toggleLegend = toggleLegend;
 global.changeColor = changeColor;
 global.changeOpacity = changeOpacity;
