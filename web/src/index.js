@@ -89,6 +89,24 @@ var initialViewUp;
   MISC
 ***/
 
+function downloadImage()
+{
+  renderWindow.captureImages()[0].then(
+    (image) => { 
+      /* window.console.log(image); */ 
+        let d=new Date();
+        let timestamp = d.getTime();
+        let a = document.createElement('a');
+        a.href = image;
+        a.download = 'CFM_3Dview_'+timestamp+'.png';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove()
+    }
+  );
+}
+
 function debug_printCamera(note) {
   let pos=activeCamera.getPosition();
   let angle=activeCamera.getViewAngle();
@@ -729,6 +747,9 @@ function buildControlLegend() {
     `<button id="Shorebtn" type="button" title="toggle coastline" onClick="toggleShoreline()" style='display:none;'></button>`
     );
   htmlBuffer.push(
+    `<button id="Downloadbtn" type="button" title="download screenshot" onClick="downloadImage()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
     `<table><thead><tr class=size-row" aria-hidden="true"></tr></thead>`);
   htmlBuffer.push(`<tbody>`);
   scene.forEach((item, idx) => {
@@ -1111,6 +1132,7 @@ global.changeOpacity = changeOpacity;
 global.toggleRepresentation = toggleRepresentation;
 global.toggleTraceAndFault = toggleTraceAndFault;
 global.toggleShoreline = toggleShoreline;
+global.downloadImage = downloadImage;
 global.scene = scene;
 global.fullScreenRenderer = fullScreenRenderer;
 
