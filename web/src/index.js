@@ -1,5 +1,5 @@
  
-/* ts viewer */
+/* SCEC vtk.js ts viewer */
 
 /*NOTE: zip fileURL input with background ts is not implemented */
 
@@ -28,7 +28,6 @@ import vtkInteractiveOrientationWidget from 'vtk.js/Sources/Widgets/Widgets3D/In
 import vtkWidgetManager from 'vtk.js/Sources/Widgets/Core/WidgetManager';
 
 import vtkOutlineFilter from 'vtk.js/Sources/Filters/General/OutlineFilter';
-
 import vtkBoundingBox from 'vtk.js/Sources/Common/DataModel/BoundingBox';
 import vtkPoints from 'vtk.js/Sources/Common/Core/Points';
 import vtkPointSet from 'vtk.js/Sources/Common/DataModel/PointSet';
@@ -36,13 +35,18 @@ import vtkPolyData from 'vtk.js/Sources/Common/DataModel/PolyData';
 
 import vtkGMTReader from 'vtk.js/Sources/IO/Geometry/GMTReader';
 
+// for making SVG layer
+import vtkSVGRepresentation from 'vtk.js/Sources/Widgets/SVG/SVGRepresentation';
+
 import style from './TSViewer.module.css';
 
 const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
-const userParams = vtkURLExtract.extractURLParameters();
-var autoInit = true;
+var autoInit = false;// disable the file drop option
 var fileCount = 0;
 var fileIdx = 0;
+
+// hold fault name embeded as svg/g layer
+const hold_name_layer=[];
 
 /** housekeeping on actor **/
 // 3D actor for each fault line, one per tsurf file,
@@ -66,6 +70,7 @@ var toggled;
 const bounds_scene = [];
 // overall bounding box, final_bounds_scene.push({'master', outline, mapper, actor });
 const final_bounds_scene = [];
+var final_bb=[];
 
 // need to expose at the top level
 var fullScreenRenderer;
@@ -73,6 +78,8 @@ var renderer;
 var renderWindow;
 var orientationWidget;
 var activeCamera;
+var interactor;
+var openGLRenderWindow;
 var boundingBox;
 
 var faultList=[];
@@ -88,12 +95,163 @@ var initialViewUp;
 /***
   MISC
 ***/
+/**** SVG layer ****/
+const { createSvgElement, createSvgDomElement } = vtkSVGRepresentation;
+// from vtk.js/Sources/Widgets/Core/WidgetManager 
+// <div><svg><g><text/image></g></svg></div>
+function createSvgRoot(id) {
+  var wrapper = document.createElement('div');
+  wrapper.setAttribute( 'style', 'position: absolute; top: 0; left: 0; width: 100%; height: 100%;');
 
-function downloadImage()
-{
+  var svgRoot = createSvgDomElement('svg');
+  // svgRoot.setAttribute('xmlns', "http://www.w3.org/2000/svg");
+  // fixed space at upper right corner 
+  svgRoot.setAttribute('style', 'position:absolute; top:10px; right:1%; width: 20%; height: 10%; border:2px solid blue;background:transparent');
+    
+  svgRoot.setAttribute('version', '1.1');
+  svgRoot.setAttribute('baseProfile', 'full');
+  svgRoot.setAttribute('class', 'svgf');
+  svgRoot.setAttribute('data-id', id);
+
+  wrapper.appendChild(svgRoot);
+
+  return { svgWrapper: wrapper, svgRoot };
+}
+
+// making a text string
+function addSvgLabel(id,textstr,xval,yval) {
+
+  var svgContainers = createSvgRoot(id);
+  var svgWrapper=svgContainers.svgWrapper;
+  var svgRoot = svgContainers.svgRoot;
+
+  // reset to put this in the middle except for SCEC label
+  // make it random places for now..
+  if(id != 0) {
+    var topv= (id*10)+20;
+    svgRoot.setAttribute('style', 'position:absolute; top:'+topv+'%; right:50%; width: 20%; height: 10%; border:2px solid green;');
+  }
+
+  var gtop = createSvgDomElement('g');
+  var text = createSvgDomElement('text');
+  text.setAttribute('x', 0);
+  text.setAttribute('y', 0);
+  text.setAttribute('dx', 20);
+  text.setAttribute('dy', 40);
+  text.setAttribute('id', textstr+"_"+id);
+  text.setAttribute('fill', 'black');
+  text.textContent=textstr;
+  gtop.appendChild(text);
+  svgRoot.appendChild(gtop);
+
+  return svgWrapper;
+}
+
+function addSCECImgLabel() {
+  var svgContainers = createSvgRoot(0);
+  var svgWrapper=svgContainers.svgWrapper;
+  var svgRoot = svgContainers.svgRoot;
+
+  // reset the svg
+// upper right
+//  svgRoot.setAttribute('style', 'position:absolute; top:10px; right:15px; width: 60px; height:40px; border:6px solid #F9F9F9;background:#990000;opacity:80%;');
+// lower left
+  svgRoot.setAttribute('style', 'position:absolute; bottom:15px; left:15px; width: 60px; height:40px; border:6px solid #F9F9F9;background:#990000;opacity:80%;');
+
+  var gtop = createSvgDomElement('g');
+  var image = createSvgDomElement('image');
+  image.setAttribute('class', 'scec-logo');
+  image.setAttribute('width', '60');
+  image.setAttribute('height', '40');
+  image.setAttribute('href', 'img/sceclogo_transparent.png');
+  //image.setAttribute('href', 'sceclogo.png');
+  gtop.appendChild(image);
+  svgRoot.appendChild(gtop);
+
+  return svgWrapper;
+}
+
+function makeSCECSvgLayer() {
+  var container = openGLRenderWindow.getReferenceByName('el');
+  var canvas = openGLRenderWindow.getCanvas();
+
+//  var {top, left, width, height }= canvas.getBoundingClientRect();
+//  var svg=document.querySelector('svg');
+//  var ccanvas=document.querySelector('canvas');
+
+  var slabel=addSCECImgLabel();
+  container.insertBefore(slabel,canvas.nextSibling);
+
+/*
+  var slabel2=addSvgLabel(0,"www.SCEC.org",0,0); 
+  container.insertBefore(slabel2,canvas.nextSibling);
+*/
+
+// TESTING picking
+/*
+  var id=2;
+  var elt=insertFaultNameSvgLayer("fault-abc",id,20,40);
+  hold_name_layer.push({fault_id:id,layer:elt});
+  window.console.log("HERE..");
+
+  id = 3;
+  elt=insertFaultNameSvgLayer("fault-xyz",id,20,40);
+  hold_name_layer.push({fault_id:id,layer:elt});
+*/
+}
+
+function _lookupSvgLayer(id) {
+//  var div_elt=document.querySelector('.svgf[data-id='+id+']');
+  let sz=hold_name_layer.length;
+  for( var i=0;i<sz;i++ ) {
+    let elt=hold_name_layer[i];
+    if (elt.fault_id == id) {
+      return elt.layer;
+    }
+  }
+  return null;
+}
+
+function insertFaultNameSvgLayer(fname,id,x,y) {
+  var container = openGLRenderWindow.getReferenceByName('el');
+  var canvas = openGLRenderWindow.getCanvas();
+
+  var div_elt=addSvgLabel(id,fname,x,y); 
+  container.insertBefore(div_elt,canvas.nextSibling);
+  return div_elt;
+}
+
+function deleteFaultNameSvgLayer(id) {
+  var container = openGLRenderWindow.getReferenceByName('el');
+  
+  var div_elt=_lookupSvgLayer(id);
+  container.removeChild(div_elt);
+}
+
+
+
+function downloadImage() {
+  let ttmp=renderWindow.captureImages();
+
+/*XXX try to figure out how to get svg to be brought in.. */
+  var svg=document.querySelector('svg');
+
+  var xvml=new XMLSerializer().serializeToString(svg);
+  var svg64=btoa(xml);
+  var b64Start="data:image/svg+xml;base64,";
+  var image64 = b64Start + svg64;
+
+  var canvas = openGLRenderWindow.getCanvas();
+  var cdurl=c.toDataURL();
+  var ctx=canvas.getContext('2d');
+  var img=ctx.drawImage();
+/*  */
+
   renderWindow.captureImages()[0].then(
     (image) => { 
       /* window.console.log(image); */ 
+        let tmp=image;
+
         let d=new Date();
         let timestamp = d.getTime();
         let a = document.createElement('a');
@@ -121,11 +279,13 @@ function debug_printCamera(note) {
   window.console.log("  viewMatrix    "+vmatrix.toString());
 }
 
-function onVisClick(event) {
-  const el = event.target;
-  const index = Number(el.dataset.index);
-  const actor = scene[index].actor;
-  const visibility = actor.getVisibility();
+// when an entry on legend list get clicked,
+// alter actor's visibility
+function onVClick(event) {
+  var el = event.target;
+  var index = Number(el.dataset.index);
+  var actor = scene[index].actor;
+  var visibility = actor.getVisibility();
 
   actor.setVisibility(!visibility);
   if (visibility) {
@@ -164,10 +324,11 @@ function trim4Name(fname) {
      var n = pre.split('-');
      var sz=n.length;
      if(sz >= 4) {
-       nname=pre.substring(15,);
-       if(post != null) {
-         nname= nname+"("+post+")";
-       }
+//      nname=pre.substring(15,);
+        nname=n[3];
+/*** do not add the post part
+       if(post != null) { nname= nname+"("+post+")"; }
+***/
      }
    }
 
@@ -185,12 +346,12 @@ function loadGMTContent(gmtContent, gtype) {
   const nbOutputs = gmtReader.getNumberOfOutputPorts();
 
   for (let idx = 0; idx < nbOutputs; idx++) {
-    const source = gmtReader.getOutputData(idx); // polydata
-    const name = source.get('name').name;
-    const mapper = vtkMapper.newInstance();
-    const actor = vtkActor.newInstance();
+    var source = gmtReader.getOutputData(idx); // polydata
+    var name = source.get('name').name;
+    var mapper = vtkMapper.newInstance();
+    var actor = vtkActor.newInstance();
 
-    const prop = vtkProperty.newInstance();
+    var prop = vtkProperty.newInstance();
     prop.setLineWidth(600);
     prop.setOpacity(1);
 
@@ -243,9 +404,9 @@ function retrieveSurfaceTraces(container) {
 
 function collectActiveTraceAndFault()
 {
-  const cnt=faultList.length;
+  var cnt=faultList.length;
   for(let i=0;i<cnt;i++) {
-    const name=faultList[i];
+    var name=faultList[i];
     trace_scene.forEach((item, idx) => {
       let n=item.name; 
       if(n == name)  {
@@ -266,7 +427,7 @@ function collectActiveTraceAndFault()
 
 function toggleTraceAndFault() 
 {
-  const cnt=actorList.length;
+  var cnt=actorList.length;
   if(cnt == 0) {
     window.console.log("ERROR: trace list is empty");
     return;
@@ -313,9 +474,9 @@ function toggleShoreline() {
 ***/
 
 function majorAxis(vec3, idxA, idxB) {
-  const axis = [0, 0, 0];
-  const idx = Math.abs(vec3[idxA]) > Math.abs(vec3[idxB]) ? idxA : idxB;
-  const value = vec3[idx] > 0 ? 1 : -1;
+  var axis = [0, 0, 0];
+  var idx = Math.abs(vec3[idxA]) > Math.abs(vec3[idxB]) ? idxA : idxB;
+  var value = vec3[idx] > 0 ? 1 : -1;
   axis[idx] = value;
   return axis;
 }
@@ -326,11 +487,11 @@ function reset2North(direction) {
   activeCamera.setViewUp(0,1,0);
   activeCamera.setFocalPoint(0,0,0);
 
-  const viewUp = activeCamera.getViewUp();
-  const focalPoint = activeCamera.getFocalPoint();
-  const position = activeCamera.getPosition();
+  var viewUp = activeCamera.getViewUp();
+  var focalPoint = activeCamera.getFocalPoint();
+  var position = activeCamera.getPosition();
 
-  const distance = Math.sqrt(
+  var distance = Math.sqrt(
     vtkMath.distance2BetweenPoints(position, focalPoint)
   );
   activeCamera.setPosition(
@@ -378,7 +539,7 @@ function toggleNorth() {
 
 function offTraceAndFault()
 {
-  const cnt=actorList.length;
+  var cnt=actorList.length;
   if(cnt == 0) {
     window.console.log("ERROR: trace list is empty");
     return 0;
@@ -427,10 +588,10 @@ function toggleNorthByBtn() {
 
 function buildOrientationMarker() {
 
-  const axes = vtkGeoAxesActor.newInstance();
+  var axes = vtkGeoAxesActor.newInstance();
   orientationWidget = vtkOrientationMarkerWidget.newInstance({
     actor: axes,
-    interactor: renderWindow.getInteractor(),
+    interactor: interactor,
   });
   orientationWidget.setEnabled(true);
   orientationWidget.setViewportCorner(
@@ -447,6 +608,7 @@ function buildOrientationMarker() {
   const widgetManager = vtkWidgetManager.newInstance();
   widgetManager.setRenderer(orientationWidget.getRenderer());
 
+// InteractiveOrientation Widget
   const widget = vtkInteractiveOrientationWidget.newInstance();
   widget.placeWidget(axes.getBounds());
   widget.setBounds(axes.getBounds());
@@ -466,11 +628,11 @@ vw.onOrientationChange(({ up, direction0, action, event }) => {
   activeCamera.setViewUp(0,1,0);
   activeCamera.setFocalPoint(0,0,0);
 
-  const viewUp = activeCamera.getViewUp();
-  const focalPoint = activeCamera.getFocalPoint();
-  const position = activeCamera.getPosition();
+  var viewUp = activeCamera.getViewUp();
+  var focalPoint = activeCamera.getFocalPoint();
+  var position = activeCamera.getPosition();
 
-  const distance = Math.sqrt(
+  var distance = Math.sqrt(
     vtkMath.distance2BetweenPoints(position, focalPoint)
   );
   activeCamera.setPosition(
@@ -622,9 +784,23 @@ function getOpacity(actor) {
 }
 
 function changeOpacity(idx,opacity) {
-  const actor = scene[idx].actor;
+  var actor = scene[idx].actor;
   var prop = actor.getProperty();
   prop.setOpacity(opacity);
+  var visibility=actor.getVisibility();
+  var el=document.getElementById('legend_'+idx);
+  if(visibility) {
+    if(opacity == 0) {
+      actor.setVisibility(!visibility);
+      el.classList.remove('visible');
+     
+    }  
+    } else { // not visible
+      if(opacity != 0) {
+        actor.setVisibility(!visibility);
+        el.classList.add('visible');
+      }
+  }
   renderWindow.render();
 }
 
@@ -634,18 +810,19 @@ function changeOpacity(idx,opacity) {
 
 // bounding box =[xMin, xMax, yMin, yMax, zMin, zMax]
 function addFinalBoundingBox() {
-  const outline = vtkOutlineFilter.newInstance();
-  const bb=boundingBox.getBounds();
+  var outline = vtkOutlineFilter.newInstance();
+  final_bb=boundingBox.getBounds();
+  window.console.log("Final..",final_bb);
   outline.setInputData(boundingBox);
 
-  const mapper = vtkMapper.newInstance();
+  var mapper = vtkMapper.newInstance();
   mapper.setInputConnection(outline.getOutputPort());
 
-  const actor = vtkActor.newInstance();
+  var actor = vtkActor.newInstance();
   actor.setMapper(mapper);
   actor.getProperty().set({ lineWidth: 10 , color: [1,0.2,0]});
   renderer.addActor(actor);
-  const name='name';
+  var name='name';
   final_bounds_scene.push({name, outline,mapper, actor});
 
   renderer.resetCamera();
@@ -655,13 +832,13 @@ function addFinalBoundingBox() {
 
 function addBoundingBox(data,name) {
 
-  const outline = vtkOutlineFilter.newInstance();
+  var outline = vtkOutlineFilter.newInstance();
   outline.setInputData(data);
 
-  const mapper = vtkMapper.newInstance();
+  var mapper = vtkMapper.newInstance();
   mapper.setInputConnection(outline.getOutputPort());
 
-  const actor = vtkActor.newInstance();
+  var actor = vtkActor.newInstance();
   actor.setMapper(mapper);
   actor.setVisibility(0);
   actor.getProperty().set({ lineWidth: 10, color: [0.80,0.83,0.85] });
@@ -693,7 +870,7 @@ function toggleBounds() {
 }
 
 function setBounds() {
-  const actor=final_bounds_scene[0].actor;
+  var actor=final_bounds_scene[0].actor;
   actor.setVisibility(1);
 }
 
@@ -725,8 +902,8 @@ function setBoundsToNone() {
 
 // iterating mulitple times as data increases
 function buildControlLegend() {
-  const htmlBuffer = [
-    '<style>.visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;}</style>',
+  var htmlBuffer = [
+    '<style> .visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;} .dropdown { position: relative; display: inline-block; font-size:8pt } .dropdown-content { display: none; position: relative; background-color: #f2f2f2; width: 140px; padding: 0px 4px 0px 10px; z-index: 1; } .dropdown:hover .dropdown-content { display: block; } </style>',
     ];
   htmlBuffer.push(
     `<button id="Boundsbtn" type="button" title="show bounding boxes" onClick="toggleBounds()" style='display:none;'></button>`
@@ -760,21 +937,20 @@ function buildControlLegend() {
     htmlBuffer.push(
     `<tr><td>
 <input type="color" id="color_${idx}" name="${idx}" style="width:20px;" value="${color_hex}" onchange=changeColor(${idx},this.value)>
-<input type="range" id="opacity_${idx}" type="button" style="width:25px" min="0.1" max="1" step="0.1" value="0.8" onchange=changeOpacity(${idx},this.value)>
-     </td><td><div class="click visible" data-index="${idx}">${item.name}</div></td></tr>`);
-
+</td><td>
+<div class="dropdown" >
+   <div class="visible" id="legend_${idx}" data-index="${idx}">${item.name}</div>
+   <div class="row dropdown-content">
+      Opacity:&nbsp<input type="range" id="opacity_${idx}" type="button" style="width:60px" min="0" max="1" step="0.1" value="0.8" onchange=changeOpacity(${idx},this.value)>
+   </div>
+</div>
+    </td></tr>`);
   });
   htmlBuffer.push(`</tbody>`);
 
   // remove old one
   fullScreenRenderer.removeController();
   fullScreenRenderer.addController(htmlBuffer.join('\n'));
-
-  const nodes = document.querySelectorAll('.click');
-  for (let i = 0; i < nodes.length; i++) {
-    const el = nodes[i];
-    el.onclick = onVisClick;
-  }
 }
 
 //  <input type="color" id="favcolor" name="favcolor" value="#ff0000"><br><br>
@@ -788,7 +964,7 @@ function changeColor(idx, hex_color) {
   var ng= Math.floor(((g - 0.5)/255)*100)/100;
   var nb= Math.floor(((b - 0.5)/255)*100)/100;
 
-  const actor = scene[idx].actor;
+  var actor = scene[idx].actor;
   var property = actor.getProperty();
   property.setColor(nr,ng,nb);
   renderWindow.render();
@@ -802,11 +978,6 @@ function toggleLegend() {
   LOADING
 ***/
 
-//   Add class to body if iOS device 
-if (iOS) {
-  document.querySelector('body').classList.add('is-ios-device');
-}
-
 function preventDefaults(e) {
   e.preventDefault();
   e.stopPropagation();
@@ -819,8 +990,8 @@ function emptyContainer(container) {
 }
 
 function loadZipContent(zipContent) {
-  const fileContents = { ts: {} };
-  const zip = new JSZip();
+  var fileContents = { ts: {} };
+  var zip = new JSZip();
   zip.loadAsync(zipContent).then(() => {
     let workLoad = 0;
 
@@ -829,19 +1000,19 @@ function loadZipContent(zipContent) {
         return;
       }
 
-      const promises = [];
+      var promises = [];
       Promise.all(promises).then(() => {
         // Create pipeline from ts 
         Object.keys(fileContents.ts).forEach((tsFilePath) => {
           window.console.log("retrieve, tsFilePath>>",tsFilePath);
 
-          const tsReader = fileContents.ts[tsFilePath];
+          var tsReader = fileContents.ts[tsFilePath];
 
-          const size = tsReader.getNumberOfOutputPorts();
+          var size = tsReader.getNumberOfOutputPorts();
           for (let i = 0; i < size; i++) {
-            const source = tsReader.getOutputData(i);
-            const mapper = vtkMapper.newInstance();
-            const actor = vtkActor.newInstance();
+            var source = tsReader.getOutputData(i);
+            var mapper = vtkMapper.newInstance();
+            var actor = vtkActor.newInstance();
             let name = source.get('name').name;
             if ( name === undefined) {
                name = trim4Name(tsFilePath);
@@ -850,7 +1021,7 @@ function loadZipContent(zipContent) {
             boundingBox.addBounds(source.getBounds());
             addBoundingBox(source);
 // color
-            const prop = vtkProperty.newInstance();
+            var prop = vtkProperty.newInstance();
             setInitialColor(prop);
             prop.setOpacity(0.8);
             actor.setProperty(prop);
@@ -870,7 +1041,7 @@ function loadZipContent(zipContent) {
       if (relativePath.match(/\.ts$/i)) {
         workLoad++;
         zipEntry.async('string').then((txt) => {
-          const reader = vtkTSReader.newInstance();
+          var reader = vtkTSReader.newInstance();
           reader.parseAsText(txt);
           fileContents.ts[relativePath] = reader;
           workLoad--;
@@ -888,22 +1059,23 @@ function Decodeuint8arr(uint8array){
 
 
 function loadTSContent(tsContent, name) {
-  const tsReader = vtkTSReader.newInstance();
+  var tsReader = vtkTSReader.newInstance();
   let tsContentString=Decodeuint8arr(tsContent);
   tsReader.parseAsText(tsContentString);
-  const nbOutputs = tsReader.getNumberOfOutputPorts();
+  var nbOutputs = tsReader.getNumberOfOutputPorts();
 
   fileIdx++;
   for (let idx = 0; idx < nbOutputs; idx++) {
-    const source = tsReader.getOutputData(idx);
-    const mapper = vtkMapper.newInstance();
-    const actor = vtkActor.newInstance();
-    scene.push({ name, source, mapper, actor });
+    var source = tsReader.getOutputData(idx);
+    var mapper = vtkMapper.newInstance();
+    var actor = vtkActor.newInstance();
+
+    scene.push({ name, source, mapper, actor});
     boundingBox.addBounds(source.getBounds());
     addBoundingBox(source,name);
 
 // color & representation
-    const prop = vtkProperty.newInstance();
+    var prop = vtkProperty.newInstance();
     setRepresentationToSurface(prop);
     setInitialColor(prop);
     prop.setOpacity(0.8);
@@ -912,6 +1084,7 @@ function loadTSContent(tsContent, name) {
     actor.setMapper(mapper);
     mapper.setInputData(source);
     renderer.addActor(actor);
+
   }
   buildControlLegend();
   window.console.log("loadTSContent..",name);
@@ -920,6 +1093,7 @@ function loadTSContent(tsContent, name) {
   renderWindow.render();
   if(fileIdx == fileCount) {
     addFinalBoundingBox();
+    makeSCECSvgLayer();
     if(toggled === undefined && GMT_cnt == 3) {
       toggled=true;
       toggleTraceAndFault(); 
@@ -939,8 +1113,10 @@ export function load(container, options) {
   });
 
   renderer = fullScreenRenderer.getRenderer();
-  renderWindow = fullScreenRenderer.getRenderWindow();
   activeCamera = renderer.getActiveCamera();
+  renderWindow=renderer.getRenderWindow();
+  interactor = renderWindow.getInteractor();
+  openGLRenderWindow = interactor.getView();
   boundingBox = vtkBoundingBox.newInstance();
   faultList=[];
   actorList=[];
@@ -948,24 +1124,25 @@ export function load(container, options) {
   retrieveSurfaceTraces(container);
   retrieveShoreline(container);
 
+// option : file
   if (options.file) {
     if (options.ext === 'ts') {
-      const reader = new FileReader();
+      var reader = new FileReader();
       reader.onload = function onLoad(e) {
-        const tsReader = vtkTSReader.newInstance();
+        var tsReader = vtkTSReader.newInstance();
         tsReader.parseAsText(reader.result);
-        const nbOutputs = tsReader.getNumberOfOutputPorts();
+        var nbOutputs = tsReader.getNumberOfOutputPorts();
         for (let idx = 0; idx < nbOutputs; idx++) {
-          const source = tsReader.getOutputData(idx);
-          const mapper = vtkMapper.newInstance();
-          const actor = vtkActor.newInstance();
-          const name = source.get('name').name;
+          var source = tsReader.getOutputData(idx);
+          var mapper = vtkMapper.newInstance();
+          var actor = vtkActor.newInstance();
+          var name = source.get('name').name;
           scene.push({ name, source, mapper, actor });
           boundingBox.addBounds(source.getBounds());
           addBoundingBox(source,name);
 
 // color
-          const prop = vtkProperty.newInstance();
+          var prop = vtkProperty.newInstance();
           setInitialColor(prop);
           prop.setOpacity(0.8);
           actor.setProperty(prop);
@@ -982,19 +1159,21 @@ export function load(container, options) {
     } else {
       loadZipContent(options.file);
     }
+// option: fileURL XXX
   } else if (options.fileURL) {
 
+    fileCount=options.fileURL.length;
     function retrieveFileContent(fname, name) {
       window.console.log("retrieveFileContent, fname>>",fname);
 
-      const ext = fname.substr((fname.lastIndexOf('.') + 1));
-      const progressContainer = document.createElement('div');
+      var ext = fname.substr((fname.lastIndexOf('.') + 1));
+      var progressContainer = document.createElement('div');
       progressContainer.setAttribute('class', style.progress);
       container.appendChild(progressContainer);
 
-      const progressCallback = (progressEvent) => {
+      var progressCallback = (progressEvent) => {
         if (progressEvent.lengthComputable) {
-          const percent = Math.floor(
+          var percent = Math.floor(
             (100 * progressEvent.loaded) / progressEvent.total
           );
           progressContainer.innerHTML = `Loading ${percent}%`;
@@ -1045,9 +1224,9 @@ export function load(container, options) {
 }
 
 export function autoInitLocalFileLoader(container) {
-  const exampleContainer = document.querySelector('.content');
-  const rootBody = document.querySelector('body');
-  const myContainer = container || exampleContainer || rootBody;
+  var exampleContainer = document.querySelector('.content');
+  var rootBody = document.querySelector('body');
+  var myContainer = container || exampleContainer || rootBody;
 
   if (myContainer !== container) {
     myContainer.classList.add(style.fullScreen);
@@ -1058,21 +1237,21 @@ export function autoInitLocalFileLoader(container) {
     rootBody.style.padding = '0';
   }
 
-  const fileContainer = document.createElement('div');
+  var fileContainer = document.createElement('div');
   fileContainer.innerHTML = `<div class="${
     style.bigFileDrop
   }"/><input type="file" accept=".zip,.ts" style="display: none;"/>`;
   myContainer.appendChild(fileContainer);
 
-  const fileInput = fileContainer.querySelector('input');
+  var fileInput = fileContainer.querySelector('input');
 
   function handleFile(e) {
     preventDefaults(e);
-    const dataTransfer = e.dataTransfer;
-    const files = e.target.files || dataTransfer.files;
+    var dataTransfer = e.dataTransfer;
+    var files = e.target.files || dataTransfer.files;
     if (files.length === 1) {
       myContainer.removeChild(fileContainer);
-      const ext = files[0].name.split('.').slice(-1)[0];
+      var ext = files[0].name.split('.').slice(-1)[0];
       load(myContainer, { file: files[0], ext });
     }
   }
@@ -1084,28 +1263,76 @@ export function autoInitLocalFileLoader(container) {
 }
 
 
+export function foo(myParams) {
+
+  var userParams = vtkURLExtract.extractURLParameters(true, myParams);
+  if (userParams.file || userParams.fileURL) {
+    var exampleContainer = document.querySelector('.content');
+    var rootBody = document.querySelector('body');
+    var myContainer = exampleContainer || rootBody;
+
+    if (myContainer) {
+      myContainer.classList.add(style.fullScreen);
+      rootBody.style.margin = '0';
+      rootBody.style.padding = '0';
+    }
+    load(myContainer, userParams);
+    window.console.log("done calling load()");
+    buildOrientationMarker();
+    toggleNorth();
+  }
+}
+
 /***
    MAIN 
 ***/
 
-if (userParams.file || userParams.fileURL) {
-  const exampleContainer = document.querySelector('.content');
-  const rootBody = document.querySelector('body');
-  const myContainer = exampleContainer || rootBody;
-  fileCount=userParams.fileURL.length;
-  if (myContainer) {
-    myContainer.classList.add(style.fullScreen);
-    rootBody.style.margin = '0';
-    rootBody.style.padding = '0';
-  }
-  load(myContainer, userParams);
-  window.console.log("done calling load()");
-  buildOrientationMarker();
-  toggleNorth();
+//   Add class to body if iOS device 
+if (iOS) {
+  document.querySelector('body').classList.add('is-ios-device');
 }
 
-renderer.resetCamera();
-renderWindow.render();
+var myParams=window.location.search;
+
+// to accept the url being sent from the service
+window.addEventListener('message', function(event) {
+      window.console.log("view3DIfran, received a message..");
+      var origin = event.origin;
+      if (origin != "http://localhost" && origin != "http://asperity.scec.org" ) {
+          window.console.log("view3DIfram, bad message origin >>", origin);
+          return;
+      }
+
+      if (typeof event.data == 'object' && event.data.call=='fromSCEC') {
+          myParams="?"+decodeURI(event.data.value);
+          } else {
+            window.console.log("view3DIfram, invalid event data >>",event.data);
+      }
+});
+
+
+window.console.log("initial myParams is ",myParams);
+
+if( myParams == undefined || myParams.includes("?2Long") ) {
+
+  window.top.postMessage({'call':'from3DViewer', value:'send params'}, '*');
+
+  var waitInterval = setInterval(function () {
+    if ( !myParams.includes("?2Long") ) {
+      window.console.log("GOT params from service, size is >> ",myParams.length);
+
+      foo(myParams);
+
+      clearInterval(waitInterval);
+      waitInterval=0;
+      } else {
+         window.console.log("Looping in interval..",waitInterval);
+    }
+  }, 1000);
+} else {
+
+  foo(myParams);
+}
 
 // Auto setup if no method get called within 100ms
 setTimeout(() => {
