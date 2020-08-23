@@ -1,0 +1,1372 @@
+ 
+/* SCEC vtk.js ts viewer */
+
+/*NOTE: zip fileURL input with background ts is not implemented */
+
+/* eslint-disable import/prefer-default-export */
+/* eslint-disable import/no-extraneous-dependencies */
+
+/*remove links to kiteware site:  import 'vtk.js/Sources/favicon'; */
+import JSZip from 'jszip';
+
+import macro from 'vtk.js/Sources/macro';
+
+import HttpDataAccessHelper from 'vtk.js/Sources/IO/Core/DataAccessHelper/HttpDataAccessHelper';
+import vtkFullScreenRenderWindow from 'vtk.js/Sources/Rendering/Misc/FullScreenRenderWindow';
+import vtkURLExtract from 'vtk.js/Sources/Common/Core/URLExtract';
+import vtkTSReader from 'vtk.js/Sources/IO/Geometry/TSReader';
+
+import vtkMapper from 'vtk.js/Sources/Rendering/Core/Mapper';
+import vtkActor from 'vtk.js/Sources/Rendering/Core/Actor';
+import vtkProperty from 'vtk.js/Sources/Rendering/Core/Property';
+import vtkCamera from 'vtk.js/Sources/Rendering/Core/Camera';
+
+import vtkOrientationMarkerWidget from 'vtk.js/Sources/Interaction/Widgets/OrientationMarkerWidget'
+import vtkGeoAxesActor from 'vtk.js/Sources/Rendering/Core/GeoAxesActor';
+import * as vtkMath from 'vtk.js/Sources/Common/Core/Math';
+import vtkInteractiveOrientationWidget from 'vtk.js/Sources/Widgets/Widgets3D/InteractiveOrientationWidget';
+import vtkWidgetManager from 'vtk.js/Sources/Widgets/Core/WidgetManager';
+
+import vtkOutlineFilter from 'vtk.js/Sources/Filters/General/OutlineFilter';
+import vtkBoundingBox from 'vtk.js/Sources/Common/DataModel/BoundingBox';
+import vtkPoints from 'vtk.js/Sources/Common/Core/Points';
+import vtkPointSet from 'vtk.js/Sources/Common/DataModel/PointSet';
+import vtkPolyData from 'vtk.js/Sources/Common/DataModel/PolyData';
+
+import vtkGMTReader from 'vtk.js/Sources/IO/Geometry/GMTReader';
+
+// for making SVG layer
+import vtkSVGRepresentation from 'vtk.js/Sources/Widgets/SVG/SVGRepresentation';
+
+import style from './TSViewer.module.css';
+
+const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
+var autoInit = false;// disable the file drop option
+var fileCount = 0;
+var fileIdx = 0;
+
+// hold fault name embeded as svg/g layer
+const hold_name_layer=[];
+
+/** housekeeping on actor **/
+// 3D actor for each fault line, one per tsurf file,
+// scene.push({ name, source/polydata, mapper, actor });
+const scene = [];
+
+// California shoreline actor from GMAT file
+// coast_scene.push({ name, source/polydata, mapper, actor });
+const coast_scene = [];
+
+// fault trace/blind, from GMAT file, could have multiple traces with
+// duplicate fault names
+// trace_scene.push({ name, source/polydata, mapper, actor });
+const trace_scene = [];
+const blind_scene = [];
+
+var GMT_cnt=0;
+var toggled;
+
+// bounding box, one  per fault line
+const bounds_scene = [];
+// overall bounding box, final_bounds_scene.push({'master', outline, mapper, actor });
+const final_bounds_scene = [];
+var final_bb=[];
+
+// need to expose at the top level
+var fullScreenRenderer;
+var renderer;
+var renderWindow;
+var orientationWidget;
+var activeCamera;
+var interactor;
+var openGLRenderWindow;
+var boundingBox;
+
+var faultList=[];
+var actorList=[];
+var activeActorList=[];
+
+// to track the original Camera View
+var initialCameraView;
+var initialPosition;
+var initialFocalPoint;
+var initialViewUp;
+
+/***
+  MISC
+***/
+/**** SVG layer ****/
+const { createSvgElement, createSvgDomElement } = vtkSVGRepresentation;
+// from vtk.js/Sources/Widgets/Core/WidgetManager 
+// <div><svg><g><text/image></g></svg></div>
+function createSvgRoot(id) {
+  var wrapper = document.createElement('div');
+  wrapper.setAttribute( 'style', 'position: absolute; top: 0; left: 0; width: 100%; height: 100%;');
+
+  var svgRoot = createSvgDomElement('svg');
+  // svgRoot.setAttribute('xmlns', "http://www.w3.org/2000/svg");
+  // fixed space at upper right corner 
+  svgRoot.setAttribute('style', 'position:absolute; top:10px; right:1%; width: 20%; height: 10%; border:2px solid blue;background:transparent');
+    
+  svgRoot.setAttribute('version', '1.1');
+  svgRoot.setAttribute('baseProfile', 'full');
+  svgRoot.setAttribute('class', 'svgf');
+  svgRoot.setAttribute('data-id', id);
+
+  wrapper.appendChild(svgRoot);
+
+  return { svgWrapper: wrapper, svgRoot };
+}
+
+// making a text string
+function addSvgLabel(id,textstr,xval,yval) {
+
+  var svgContainers = createSvgRoot(id);
+  var svgWrapper=svgContainers.svgWrapper;
+  var svgRoot = svgContainers.svgRoot;
+
+  // reset to put this in the middle except for SCEC label
+  // make it random places for now..
+  if(id != 0) {
+    var topv= (id*10)+20;
+    svgRoot.setAttribute('style', 'position:absolute; top:'+topv+'%; right:50%; width: 20%; height: 10%; border:2px solid green;');
+  }
+
+  var gtop = createSvgDomElement('g');
+  var text = createSvgDomElement('text');
+  text.setAttribute('x', 0);
+  text.setAttribute('y', 0);
+  text.setAttribute('dx', 20);
+  text.setAttribute('dy', 40);
+  text.setAttribute('id', textstr+"_"+id);
+  text.setAttribute('fill', 'black');
+  text.textContent=textstr;
+  gtop.appendChild(text);
+  svgRoot.appendChild(gtop);
+
+  return svgWrapper;
+}
+
+function addSCECImgLabel() {
+  var svgContainers = createSvgRoot(0);
+  var svgWrapper=svgContainers.svgWrapper;
+  var svgRoot = svgContainers.svgRoot;
+
+  // reset the svg
+// upper right
+//  svgRoot.setAttribute('style', 'position:absolute; top:10px; right:15px; width: 60px; height:40px; border:6px solid #F9F9F9;background:#990000;opacity:80%;');
+
+// lower left
+  svgRoot.setAttribute('style', 'position:absolute; bottom:15px; left:15px; width: 60px; height:40px; border:6px solid #F9F9F9;background:#990000;opacity:80%;');
+
+  var gtop = createSvgDomElement('g');
+  var image = createSvgDomElement('image');
+  image.setAttribute('class', 'scec-logo');
+  image.setAttribute('width', '60');
+  image.setAttribute('height', '40');
+  image.setAttribute('href', 'img/sceclogo_transparent.png');
+  //image.setAttribute('href', 'sceclogo.png');
+  gtop.appendChild(image);
+  svgRoot.appendChild(gtop);
+
+  return svgWrapper;
+}
+
+function makeSCECSvgLayer() {
+  var container = openGLRenderWindow.getReferenceByName('el');
+  var canvas = openGLRenderWindow.getCanvas();
+
+//  var {top, left, width, height }= canvas.getBoundingClientRect();
+//  var svg=document.querySelector('svg');
+//  var ccanvas=document.querySelector('canvas');
+
+  var slabel=addSCECImgLabel();
+  container.insertBefore(slabel,canvas.nextSibling);
+
+/*
+  var slabel2=addSvgLabel(0,"www.SCEC.org",0,0); 
+  container.insertBefore(slabel2,canvas.nextSibling);
+*/
+
+// TESTING picking
+/*
+  var id=2;
+  var elt=insertFaultNameSvgLayer("fault-abc",id,20,40);
+  hold_name_layer.push({fault_id:id,layer:elt});
+  window.console.log("HERE..");
+
+  id = 3;
+  elt=insertFaultNameSvgLayer("fault-xyz",id,20,40);
+  hold_name_layer.push({fault_id:id,layer:elt});
+*/
+}
+
+function _lookupSvgLayer(id) {
+//  var div_elt=document.querySelector('.svgf[data-id='+id+']');
+  let sz=hold_name_layer.length;
+  for( var i=0;i<sz;i++ ) {
+    let elt=hold_name_layer[i];
+    if (elt.fault_id == id) {
+      return elt.layer;
+    }
+  }
+  return null;
+}
+
+function insertFaultNameSvgLayer(fname,id,x,y) {
+  var container = openGLRenderWindow.getReferenceByName('el');
+  var canvas = openGLRenderWindow.getCanvas();
+
+  var div_elt=addSvgLabel(id,fname,x,y); 
+  container.insertBefore(div_elt,canvas.nextSibling);
+  return div_elt;
+}
+
+function deleteFaultNameSvgLayer(id) {
+  var container = openGLRenderWindow.getReferenceByName('el');
+  
+  var div_elt=_lookupSvgLayer(id);
+  container.removeChild(div_elt);
+}
+
+
+
+function downloadImage() {
+  let ttmp=renderWindow.captureImages();
+
+/*XXX try to figure out how to get svg to be brought in.. 
+  var svg=document.querySelector('svg');
+
+  var xvml=new XMLSerializer().serializeToString(svg);
+  var svg64=btoa(xvml);
+  var b64Start="data:image/svg+xml;base64,";
+  var image64 = b64Start + svg64;
+
+  var canvas = openGLRenderWindow.getCanvas();
+  var cdurl=canvas.toDataURL();
+??  var ctx=canvas.getContext('2d');
+??  var img=ctx.drawImage(image64);
+*/
+
+  renderWindow.captureImages()[0].then(
+    (image) => { 
+      /* window.console.log(image); */ 
+        let tmp=image;
+
+        let d=new Date();
+        let timestamp = d.getTime();
+        let a = document.createElement('a');
+        a.href = image;
+        a.download = 'CFM_3Dview_'+timestamp+'.png';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove()
+    }
+  );
+}
+
+function debug_printCamera(note) {
+  let pos=activeCamera.getPosition();
+  let angle=activeCamera.getViewAngle();
+  let vmatrix=activeCamera.getViewMatrix();
+  let viewup=activeCamera.getViewUp();
+  let focal=activeCamera.getFocalPoint();
+  window.console.log("===camera, "+note);
+  window.console.log("  position "+pos.toString());
+  window.console.log("  angle    ",angle);
+  window.console.log("  viewup   "+viewup.toString());
+  window.console.log("  focal    "+focal.toString());
+  window.console.log("  viewMatrix    "+vmatrix.toString());
+}
+
+// when an entry on legend list get clicked,
+// alter actor's visibility
+function onVClick(event) {
+  var el = event.target;
+  var index = Number(el.dataset.index);
+  var actor = scene[index].actor;
+  var visibility = actor.getVisibility();
+
+  actor.setVisibility(!visibility);
+  if (visibility) {
+    el.classList.remove('visible');
+  } else {
+    el.classList.add('visible');
+  }
+  renderWindow.render();
+}
+
+// https://s3-us-west-2.amazonaws.com/files.scec.org/s3fs-public/projects/cfm/CFM5/CFM52_preferred/500m/CRFA-BPPM-WEST-Big_Pine_fault-CFM2_m500.ts
+//    also ... -LEGG-CFM4_m500.ts
+// http://localhost/~mei/testV/cfm_data/CFM_1571460363892.zip
+// cfm_data/WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5.ts
+
+function trim4Name(fname) {
+   // trim path   
+   var dname=fname.substring(fname.lastIndexOf('/')+1);
+   var nname=dname.substring(0,dname.lastIndexOf('.'));
+
+// WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5
+// WTRA-USAV-WLNC-Walnut_Creek_fault-CFM5_m500
+   var teststr=nname.substring(nname.lastIndexOf("-"));
+   var sname=nname;
+   if(teststr.includes('_')) {
+     sname=dname.substring(0,nname.lastIndexOf("_"));
+   }
+   faultList.push(sname);
+
+   // trim abb and ext
+   var n = nname.split('-');
+   var idx=nname.lastIndexOf('-')+1;
+   if(idx != null) { // or a simple zip file
+     var pre=nname.substring(0,idx-1);
+     var post=nname.substring(idx);
+     var n = pre.split('-');
+     var sz=n.length;
+     if(sz >= 4) {
+//      nname=pre.substring(15,);
+        nname=n[3];
+/*** do not add the post part
+       if(post != null) { nname= nname+"("+post+")"; }
+***/
+     }
+   }
+   // replace all underline with space
+   var nnname = nname.replace(/_/g, " ");
+
+   return nnname;
+}
+
+
+/***
+  SHORELINE + SURFACE TRACES
+***/
+function loadGMTContent(gmtContent, gtype) {
+  const gmtReader = vtkGMTReader.newInstance();
+  let gmtContentString=Decodeuint8arr(gmtContent);
+  gmtReader.parseAsText(gmtContentString);
+  const nbOutputs = gmtReader.getNumberOfOutputPorts();
+
+  for (let idx = 0; idx < nbOutputs; idx++) {
+    var source = gmtReader.getOutputData(idx); // polydata
+    var name = source.get('name').name;
+    var mapper = vtkMapper.newInstance();
+    var actor = vtkActor.newInstance();
+
+    var prop = vtkProperty.newInstance();
+    prop.setLineWidth(600);
+    prop.setOpacity(1);
+
+    switch (gtype) {
+      case 'blind':
+         blind_scene.push({ name, source, mapper, actor });
+         actorList.push(actor);
+         prop.setColor(0.8,0.1,0.1); 
+         break;
+      case 'trace':
+         trace_scene.push({ name, source, mapper, actor });
+         actorList.push(actor);
+         prop.setColor(1,0.1,1); 
+         break;
+      case 'coast':
+         coast_scene.push({ name, source, mapper, actor });
+         prop.setColor(0,0.5,1); 
+         break;
+    }
+
+    actor.setProperty(prop);
+    actor.setVisibility(0);
+    actor.setMapper(mapper);
+    mapper.setInputData(source);
+    renderer.addActor(actor);
+  }
+  window.console.log("loadingGMT..",nbOutputs);
+  GMT_cnt++;
+  if(GMT_cnt == 3 && toggled == undefined) {
+    if(final_bounds_scene.length > 0 ) {
+      toggled=true;
+      toggleTraceAndFault();
+      toggleShoreline();
+    }
+  }
+}
+
+
+function retrieveSurfaceTraces(container) {
+  const blind_file="cfm_data/CFM5.2_blind.utm"
+  const trace_file="cfm_data/CFM5.2_traces.utm"
+
+  HttpDataAccessHelper.fetchBinary(blind_file, {}).then((content) => {
+      loadGMTContent(content, 'blind');
+  });
+  HttpDataAccessHelper.fetchBinary(trace_file, {}).then((content) => {
+      loadGMTContent(content, 'trace');
+  });
+}
+
+function collectActiveTraceAndFault()
+{
+  var cnt=faultList.length;
+  for(let i=0;i<cnt;i++) {
+    var name=faultList[i];
+    trace_scene.forEach((item, idx) => {
+      let n=item.name; 
+      if(n == name)  {
+        let actor=item.actor;
+        activeActorList.push(actor);
+      }
+    });
+    blind_scene.forEach((item, idx) => {
+      let n=item.name; 
+      if(n == name)  {
+        let actor=item.actor;
+        activeActorList.push(actor);
+      }
+    });
+  }
+}
+
+
+function toggleTraceAndFault() 
+{
+  var cnt=actorList.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: trace list is empty");
+    return;
+  }
+  for(let i=0;i<cnt; i++) {
+    let item=actorList[i];
+    let vis=item.getVisibility();
+    item.setVisibility(!vis);
+  };
+  renderWindow.render();
+  window.console.log("toggleTraceAndFault");
+}
+
+function retrieveShoreline(container) {
+  if(coast_scene.length > 0) {
+    return;
+  }
+  const coast_file="cfm_data/coast.utm"
+
+  HttpDataAccessHelper.fetchBinary(coast_file, {}).then((content) => {
+      loadGMTContent(content, 'coast');
+  });
+}
+
+function toggleShoreline() {
+  let cnt=coast_scene.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: shoreline is empty");
+    return;
+  }
+
+  for(let i=0; i<cnt; i++) {
+    let item=coast_scene[i]; 
+    let actor=item.actor;
+    let vis = actor.getVisibility();
+    actor.setVisibility(!vis);
+  };
+  renderWindow.render();
+  window.console.log("toggleShorline");
+}
+
+/***
+  DIRECTION MARKER
+***/
+
+function majorAxis(vec3, idxA, idxB) {
+  var axis = [0, 0, 0];
+  var idx = Math.abs(vec3[idxA]) > Math.abs(vec3[idxB]) ? idxA : idxB;
+  var value = vec3[idx] > 0 ? 1 : -1;
+  axis[idx] = value;
+  return axis;
+}
+
+function reset2North(direction) {
+
+  activeCamera.setPosition(0,0,1);
+  activeCamera.setViewUp(0,1,0);
+  activeCamera.setFocalPoint(0,0,0);
+
+  var viewUp = activeCamera.getViewUp();
+  var focalPoint = activeCamera.getFocalPoint();
+  var position = activeCamera.getPosition();
+
+  var distance = Math.sqrt(
+    vtkMath.distance2BetweenPoints(position, focalPoint)
+  );
+  activeCamera.setPosition(
+    focalPoint[0] + direction[0] * distance,
+    focalPoint[1] + direction[1] * distance,
+    focalPoint[2] + direction[2] * distance
+  );
+
+  if (direction[0]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 1, 2));
+  }
+  if (direction[1]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 2));
+  }
+  if (direction[2]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
+  }
+  orientationWidget.updateMarkerOrientation();
+  renderer.resetCamera();
+  renderWindow.render();
+}
+
+function retrieveInitialCameraView() {
+  initialPosition=activeCamera.getPosition();
+  initialFocalPoint=activeCamera.getFocalPoint();
+  initialViewUp=activeCamera.getViewUp();
+  initialCameraView === activeCamera.getViewMatrix();
+}
+
+function resetInitialCameraView() {
+  if( initialCameraView === undefined ) {
+    return;
+  }
+  activeCamera.setPosition(initialPosition[0], initialPosition[1], initialPosition[2]);
+  activeCamera.setFocalPoint(initialFocalPoint[0], initialFocalPoint[1], initialFocalPoint[2]);
+  activeCamera.setViewUp(initialViewUp[0], initialViewUp[1], initialViewUp[2]);
+  renderer.resetCamera();
+  renderWindow.render();
+}
+
+function toggleNorth() {
+  reset2North([0,1,0]);
+  renderWindow.render();
+}
+
+function offTraceAndFault()
+{
+  var cnt=actorList.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: trace list is empty");
+    return 0;
+  }
+  // need to toggle off ?
+  let item=actorList[0];
+  let vis=item.getVisibility();
+  if(vis) {
+    toggleTraceAndFault();
+    return 1;
+    } else {
+      return 0;
+  }
+}
+
+function offShoreline() {
+  let cnt=coast_scene.length;
+  if(cnt == 0) {
+    window.console.log("ERROR: shoreline is empty");
+    return 0;
+  }
+  let item=coast_scene[0];
+  let actor=item.actor;
+  let vis = actor.getVisibility();
+  if(vis) {
+    toggleShoreline();
+    return 1;
+    } else {
+      return 0;
+  }
+}
+
+function toggleNorthByBtn() {
+  var track_shore=offShoreline();
+  var track_trace=offTraceAndFault();
+  reset2North([0,1,0]);
+  // bring shore/trace back if had to hide them earlier
+  if(track_shore) {
+      toggleShoreline();
+  }
+  if(track_trace) {
+      toggleTraceAndFault();
+  }
+  renderWindow.render();
+}
+
+function buildOrientationMarker() {
+
+  var axes = vtkGeoAxesActor.newInstance();
+  orientationWidget = vtkOrientationMarkerWidget.newInstance({
+    actor: axes,
+    interactor: interactor,
+  });
+  orientationWidget.setEnabled(true);
+  orientationWidget.setViewportCorner(
+    vtkOrientationMarkerWidget.Corners.BOTTOM_RIGHT
+  );
+  orientationWidget.setViewportSize(0.20);
+  orientationWidget.setMinPixelSize(100);
+  orientationWidget.setMaxPixelSize(300);
+
+// ----------------------------------------------------------------------------
+// Widget manager
+// ----------------------------------------------------------------------------
+
+  const widgetManager = vtkWidgetManager.newInstance();
+  widgetManager.setRenderer(orientationWidget.getRenderer());
+
+// InteractiveOrientation Widget
+  const widget = vtkInteractiveOrientationWidget.newInstance();
+  widget.placeWidget(axes.getBounds());
+  widget.setBounds(axes.getBounds());
+  widget.setPlaceFactor(1);
+
+  const vw = widgetManager.addWidget(widget);
+
+// Manage user interaction
+vw.onOrientationChange(({ up, direction0, action, event }) => {
+
+  var track_shore=offShoreline();
+  var track_trace=offTraceAndFault();
+
+  let direction=[0,0,1];
+
+  activeCamera.setPosition(0,0,1);
+  activeCamera.setViewUp(0,1,0);
+  activeCamera.setFocalPoint(0,0,0);
+
+  var viewUp = activeCamera.getViewUp();
+  var focalPoint = activeCamera.getFocalPoint();
+  var position = activeCamera.getPosition();
+
+  var distance = Math.sqrt(
+    vtkMath.distance2BetweenPoints(position, focalPoint)
+  );
+  activeCamera.setPosition(
+    focalPoint[0] + direction[0] * distance,
+    focalPoint[1] + direction[1] * distance,
+    focalPoint[2] + direction[2] * distance
+  );
+
+  if (direction[2]) {
+    activeCamera.setViewUp(majorAxis(viewUp, 0, 1));
+  }
+
+  renderer.resetCamera();
+  orientationWidget.updateMarkerOrientation();
+
+  // bring shore/trace back if had to hide them earlier
+  if(track_shore) { toggleShoreline(); }
+  if(track_trace) { toggleTraceAndFault(); }
+
+  widgetManager.enablePicking();
+  renderWindow.render();
+});
+
+  renderer.resetCamera();
+  renderWindow.render();
+}
+
+/***
+  VIEW
+***/
+
+// 0, surface - edge
+// 1, wire
+// 2, surface + edge
+var toWire=0;
+function toggleRepresentation() {
+  toWire = ( toWire + 1 ) % 3;
+  scene.forEach((item, idx) => {
+    var actor=item.actor;
+    var prop = actor.getProperty();
+    switch (toWire) {
+       case 0:
+         setRepresentationToSurface(prop);
+         break;
+       case 1:
+         setRepresentationToWireframe(prop);
+         break;
+       case 2:
+         setRepresentationToSurfaceWithEdge(prop);
+         break;
+    }
+  })
+  renderWindow.render();
+}
+
+function setRepresentationToWireframe(property) {
+   property.setRepresentationToWireframe();
+   property.setEdgeVisibility(0);
+}
+
+function setRepresentationToSurface(property) {
+   property.setRepresentationToSurface();
+   property.setEdgeVisibility(0);
+}
+
+function setRepresentationToSurfaceWithEdge(property) {
+   property.setRepresentationToSurface();
+   property.setEdgeVisibility(1);
+   property.setEdgeColor(0,0,0);
+}
+
+function setRepresentationToPoints(property) {
+   property.setRepresentationToPoints();
+}
+
+
+/***
+  COLOR
+***/
+
+/*
+  https://stackoverflow.com/questions/521295/
+      seeding-the-random-number-generator-in-javascript
+*/
+var track_color_entry=0;
+var seed = 1;
+function nextValue() {
+    var x = Math.sin(seed++) * 10000;
+    return (Math.round((x - Math.floor(x))*1000)/1000);
+}
+ 
+function setInitialColor(property) {
+   track_color_entry++;
+   let Rc=nextValue();
+   let Rg=nextValue();
+   let Rb=nextValue();
+   property.setColor(Rc,Rg,Rb);
+}
+
+function getColor(actor) {
+   var prop = actor.getProperty();
+   var color = prop.getColor();
+   var Rc=color[0];
+   var Rg=color[1];
+   var Rb=color[2];
+   var Rcx=Math.floor(Rc * 255.0 + 0.5);
+   var Rgx=Math.floor(Rg * 255.0 + 0.5);
+   var Rbx=Math.floor(Rb * 255.0 + 0.5);
+//   window.console.log("new color ",Rcx, " ", Rgx, " ", Rbx);
+   return [ Rcx, Rgx, Rbx ];
+}
+
+// https://stackoverflow.com/questions/5623838/rgb-to-hex-and-hex-to-rgb
+function componentToHex(c) {
+  var hex = c.toString(16);
+  return hex.length == 1 ? "0" + hex : hex;
+}
+
+function rgbToHex(r, g, b) {
+  return "#" + componentToHex(r) + componentToHex(g) + componentToHex(b);
+}
+
+function getHexColor(actor) {
+   var prop = actor.getProperty();
+   var color = prop.getColor();
+   var Rc=color[0];
+   var Rg=color[1];
+   var Rb=color[2];
+   var Rcx=Math.floor(Rc * 255.0 + 0.5);
+   var Rgx=Math.floor(Rg * 255.0 + 0.5);
+   var Rbx=Math.floor(Rb * 255.0 + 0.5);
+   var rt=rgbToHex(Rcx, Rgx, Rbx);
+   return rt;
+}
+
+function hex2rgb(hex) {
+  return ['0x' + hex[1] + hex[2] | 0, '0x' + hex[3] + hex[4] | 0, '0x' + hex[5] + hex[6] | 0];
+}
+
+function getRGBColorFromHex(hex) {
+  var rgb=hex2rgb(hex);
+  return rgb;
+}
+
+function getOpacity(actor) {
+   var prop = actor.getProperty();
+   var opacity = prop.getOpacity();
+   return opacity;
+}
+
+function changeOpacity(idx,opacity) {
+  var actor = scene[idx].actor;
+  var prop = actor.getProperty();
+  prop.setOpacity(opacity);
+  var visibility=actor.getVisibility();
+  var el=document.getElementById('legend_'+idx);
+  if(visibility) {
+    if(opacity == 0) {
+      actor.setVisibility(!visibility);
+      el.classList.remove('visible');
+     
+    }  
+    } else { // not visible
+      if(opacity != 0) {
+        actor.setVisibility(!visibility);
+        el.classList.add('visible');
+      }
+  }
+  renderWindow.render();
+}
+
+/***
+  BOUNDS
+***/
+
+// bounding box =[xMin, xMax, yMin, yMax, zMin, zMax]
+function addFinalBoundingBox() {
+  var outline = vtkOutlineFilter.newInstance();
+  final_bb=boundingBox.getBounds();
+  window.console.log("Final..",final_bb);
+  outline.setInputData(boundingBox);
+
+  var mapper = vtkMapper.newInstance();
+  mapper.setInputConnection(outline.getOutputPort());
+
+  var actor = vtkActor.newInstance();
+  actor.setMapper(mapper);
+  actor.getProperty().set({ lineWidth: 10 , color: [1,0.2,0]});
+  renderer.addActor(actor);
+  var name='name';
+  final_bounds_scene.push({name, outline,mapper, actor});
+
+  renderer.resetCamera();
+  renderWindow.render();
+  window.console.log("added final bounding box");
+}
+
+function addBoundingBox(data,name) {
+
+  var outline = vtkOutlineFilter.newInstance();
+  outline.setInputData(data);
+
+  var mapper = vtkMapper.newInstance();
+  mapper.setInputConnection(outline.getOutputPort());
+
+  var actor = vtkActor.newInstance();
+  actor.setMapper(mapper);
+  actor.setVisibility(0);
+  actor.getProperty().set({ lineWidth: 10, color: [0.80,0.83,0.85] });
+  renderer.addActor(actor);
+  bounds_scene.push({name, outline,mapper, actor});
+
+  renderer.resetCamera();
+  renderWindow.render();
+}
+
+// 0, 
+// 1, 
+// 2, 
+var toBounds=0;
+function toggleBounds() {
+  toBounds = ( toBounds + 1 ) % 3;
+  switch (toBounds) {
+     case 0:
+       setBounds();
+       break;
+     case 1:
+       setBoundsToAll();
+       break;
+     case 2:
+       setBoundsToNone();
+       break;
+  }
+  renderWindow.render();
+}
+
+function setBounds() {
+  var actor=final_bounds_scene[0].actor;
+  actor.setVisibility(1);
+}
+
+function setBoundsToAll() {
+  let actor=final_bounds_scene[0].actor;
+  actor.setVisibility(1);
+  bounds_scene.forEach((item, idx) => {
+    actor=item.actor;
+    actor.setVisibility(1);
+  });
+}
+
+function setBoundsToNone() {
+  let actor=final_bounds_scene[0].actor;
+  actor.setVisibility(0);
+  bounds_scene.forEach((item, idx) => {
+    actor=item.actor;
+    actor.setVisibility(0);
+  });
+}
+
+
+
+
+
+/***
+  LEGEND
+***/
+
+// iterating mulitple times as data increases
+function buildControlLegend() {
+  var htmlBuffer = [
+    '<style> .visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;} .dropdown { position: relative; display: inline-block; font-size:6pt } .dropdown-content { display: none; position: relative; background-color:transparent; width: 160px; padding: 0px 4px 0px 10px; z-index: 1; } .dropdown:hover .dropdown-content { display: block; } table td, th { border: 0px solid #ced4da; padding: 0; } table tr th { background-color: #F2F2F2; } </style>',
+    ];
+  htmlBuffer.push(
+    `<button id="Boundsbtn" type="button" title="show bounding boxes" onClick="toggleBounds()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Northbtn" type="button" title="reset view to North" onClick="toggleNorthByBtn()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Legendbtn" type="button" title="show Legend" onClick="toggleLegend()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Reprbtn" type="button" title="switch Repr" onClick="toggleRepresentation()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Tracebtn" type="button" title="toggle trace" onClick="toggleTraceAndFault()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Shorebtn" type="button" title="toggle coastline" onClick="toggleShoreline()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Downloadbtn" type="button" title="download screenshot" onClick="downloadImage()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<div style="max-height:70vh; max-width:35vw; overflow:auto; margin:-1px -6px -1px -2px;"><table><thead><tr class=size-row" aria-hidden="true"></tr></thead>`);
+  htmlBuffer.push(`<tbody>`);
+  scene.forEach((item, idx) => {
+    var ii=item;
+    var actor=item.actor;
+    var color=getColor(actor);
+    var color_hex=getHexColor(actor);
+    htmlBuffer.push(
+    `<tr><td>
+<input type="color" id="color_${idx}" name="${idx}" style="width:20px;" value="${color_hex}" onchange=changeColor(${idx},this.value)>
+</td><td>
+<div class="dropdown" >
+   <div class="visible" id="legend_${idx}" data-index="${idx}">${item.name}</div>
+   <div class="row dropdown-content">
+      Opacity:&nbsp<input type="range" id="opacity_${idx}" type="button" style="width:60px" min="0" max="1" step="0.1" value="0.8" onchange=changeOpacity(${idx},this.value)>
+   </div>
+</div>
+    </td></tr>`);
+  });
+  htmlBuffer.push(`</tbody></table></div>`);
+
+  // remove old one
+  fullScreenRenderer.removeController();
+  fullScreenRenderer.addController(htmlBuffer.join('\n'));
+}
+
+//  <input type="color" id="favcolor" name="favcolor" value="#ff0000"><br><br>
+function changeColor(idx, hex_color) {
+  var rgb=getRGBColorFromHex(hex_color);
+  var r=rgb[0];
+  var g=rgb[1];
+  var b=rgb[2];
+
+  var nr= Math.floor(((r - 0.5)/255)*100)/100;
+  var ng= Math.floor(((g - 0.5)/255)*100)/100;
+  var nb= Math.floor(((b - 0.5)/255)*100)/100;
+
+  var actor = scene[idx].actor;
+  var property = actor.getProperty();
+  property.setColor(nr,ng,nb);
+  renderWindow.render();
+}
+
+function toggleLegend() {
+  fullScreenRenderer.toggleControllerVisibility();
+}
+
+/***
+  LOADING
+***/
+
+function preventDefaults(e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+function emptyContainer(container) {
+  while (container.firstChild) {
+    container.removeChild(container.firstChild);
+  }
+}
+
+function loadZipContent(zipContent) {
+  var fileContents = { ts: {} };
+  var zip = new JSZip();
+  zip.loadAsync(zipContent).then(() => {
+    let workLoad = 0;
+
+    function done() {
+      if (workLoad !== 0) {
+        return;
+      }
+
+      var promises = [];
+      Promise.all(promises).then(() => {
+        // Create pipeline from ts 
+        Object.keys(fileContents.ts).forEach((tsFilePath) => {
+          window.console.log("retrieve, tsFilePath>>",tsFilePath);
+
+          var tsReader = fileContents.ts[tsFilePath];
+
+          var size = tsReader.getNumberOfOutputPorts();
+          for (let i = 0; i < size; i++) {
+            var source = tsReader.getOutputData(i);
+            var mapper = vtkMapper.newInstance();
+            var actor = vtkActor.newInstance();
+            let name = source.get('name').name;
+            if ( name === undefined) {
+               name = trim4Name(tsFilePath);
+            }
+            scene.push({ name, source, mapper, actor });
+            boundingBox.addBounds(source.getBounds());
+            addBoundingBox(source);
+// color
+            var prop = vtkProperty.newInstance();
+            setInitialColor(prop);
+            prop.setOpacity(0.8);
+            actor.setProperty(prop);
+
+            actor.setMapper(mapper);
+            mapper.setInputData(source);
+            renderer.addActor(actor);
+          }
+        });
+        buildControlLegend();
+        renderer.resetCamera();
+        renderWindow.render();
+      });
+    }
+
+    zip.forEach((relativePath, zipEntry) => {
+      if (relativePath.match(/\.ts$/i)) {
+        workLoad++;
+        zipEntry.async('string').then((txt) => {
+          var reader = vtkTSReader.newInstance();
+          reader.parseAsText(txt);
+          fileContents.ts[relativePath] = reader;
+          workLoad--;
+          done();
+        });
+      }
+    });
+  });
+}
+
+// https://ourcodeworld.com/articles/read/164/how-to-convert-an-uint8array-to-string-in-javascript
+function Decodeuint8arr(uint8array){
+    return new TextDecoder("utf-8").decode(uint8array);
+}
+
+
+function loadTSContent(tsContent, name) {
+  var tsReader = vtkTSReader.newInstance();
+  let tsContentString=Decodeuint8arr(tsContent);
+  tsReader.parseAsText(tsContentString);
+  var nbOutputs = tsReader.getNumberOfOutputPorts();
+
+  fileIdx++;
+  for (let idx = 0; idx < nbOutputs; idx++) {
+    var source = tsReader.getOutputData(idx);
+    var mapper = vtkMapper.newInstance();
+    var actor = vtkActor.newInstance();
+
+    scene.push({ name, source, mapper, actor});
+    boundingBox.addBounds(source.getBounds());
+    addBoundingBox(source,name);
+
+// color & representation
+    var prop = vtkProperty.newInstance();
+    setRepresentationToSurface(prop);
+    setInitialColor(prop);
+    prop.setOpacity(0.8);
+    actor.setProperty(prop);
+
+    actor.setMapper(mapper);
+    mapper.setInputData(source);
+    renderer.addActor(actor);
+
+  }
+  buildControlLegend();
+  window.console.log("loadTSContent..",name);
+  
+  renderer.resetCamera();
+  renderWindow.render();
+  if(fileIdx == fileCount) {
+    addFinalBoundingBox();
+    makeSCECSvgLayer();
+    if(toggled === undefined && GMT_cnt == 3) {
+      toggled=true;
+/* GFM case, skip the traces
+      toggleTraceAndFault(); 
+*/
+      offTraceAndFault(); 
+      toggleShoreline();
+window.console.log("HERE");
+    }
+  }
+}
+
+export function load(container, options) {
+  autoInit = false;
+  emptyContainer(container);
+
+  fullScreenRenderer = vtkFullScreenRenderWindow.newInstance({
+    background: [242, 242, 242],
+    rootContainer: container,
+    containerStyle: { height: '100%', width: '100%', position: 'absolute' },
+  });
+
+  renderer = fullScreenRenderer.getRenderer();
+  activeCamera = renderer.getActiveCamera();
+  renderWindow=renderer.getRenderWindow();
+  interactor = renderWindow.getInteractor();
+  openGLRenderWindow = interactor.getView();
+  boundingBox = vtkBoundingBox.newInstance();
+  faultList=[];
+  actorList=[];
+
+  retrieveSurfaceTraces(container);
+  retrieveShoreline(container);
+
+// option : file
+  if (options.file) {
+    if (options.ext === 'ts') {
+      var reader = new FileReader();
+      reader.onload = function onLoad(e) {
+        var tsReader = vtkTSReader.newInstance();
+        tsReader.parseAsText(reader.result);
+        var nbOutputs = tsReader.getNumberOfOutputPorts();
+        for (let idx = 0; idx < nbOutputs; idx++) {
+          var source = tsReader.getOutputData(idx);
+          var mapper = vtkMapper.newInstance();
+          var actor = vtkActor.newInstance();
+          var name = source.get('name').name;
+          scene.push({ name, source, mapper, actor });
+          boundingBox.addBounds(source.getBounds());
+          addBoundingBox(source,name);
+
+// color
+          var prop = vtkProperty.newInstance();
+          setInitialColor(prop);
+          prop.setOpacity(0.8);
+          actor.setProperty(prop);
+
+          actor.setMapper(mapper);
+          mapper.setInputData(source);
+          renderer.addActor(actor);
+        }
+        buildControlLegend();
+        renderer.resetCamera();
+        renderWindow.render();
+      };
+      reader.readAsTex(options.file);
+    } else {
+      loadZipContent(options.file);
+    }
+// option: fileURL XXX
+  } else if (options.fileURL) {
+
+    fileCount=options.fileURL.length;
+    function retrieveFileContent(fname, name) {
+      window.console.log("retrieveFileContent, fname>>",fname);
+
+      var ext = fname.substr((fname.lastIndexOf('.') + 1));
+      var progressContainer = document.createElement('div');
+      progressContainer.setAttribute('class', style.progress);
+      container.appendChild(progressContainer);
+
+      var progressCallback = (progressEvent) => {
+        if (progressEvent.lengthComputable) {
+          var percent = Math.floor(
+            (100 * progressEvent.loaded) / progressEvent.total
+          );
+          progressContainer.innerHTML = `Loading ${percent}%`;
+        } else {
+          progressContainer.innerHTML = macro.formatBytesToProperUnit(
+            progressEvent.loaded
+          );
+        }
+      };
+  
+      HttpDataAccessHelper.fetchBinary(fname, {
+        progressCallback,
+      }).then((content) => {
+        container.removeChild(progressContainer);
+        if(ext === 'ts') {  // plain ts file
+           loadTSContent(content, name);
+           } else { 
+             loadZipContent(content);
+        }
+      });
+    }
+
+// expect name=[n1,n2],fileURL=[f1,f2]
+// or fileURL=f1
+    let op=options.fileURL;
+    let path=options.filePATH;
+    if(typeof op === 'string') {
+        if(path) {
+          retrieveFileContent(path+op, trim4Name(op));
+          } else {
+            retrieveFileContent(op, trim4Name(op));
+        }
+        } else {
+          let cnt=op.length;
+          for(var i=0; i<cnt; i++) {
+            let f=op[i];
+            if(path) {
+              f=path+f;
+            }
+            if(options.name) {
+              retrieveFileContent(f,options.name[i]);
+              } else {
+                retrieveFileContent(f,trim4Name(op[i]));
+            }
+          }
+     }
+  }// fileURL
+}
+
+export function autoInitLocalFileLoader(container) {
+  var exampleContainer = document.querySelector('.content');
+  var rootBody = document.querySelector('body');
+  var myContainer = container || exampleContainer || rootBody;
+
+  if (myContainer !== container) {
+    myContainer.classList.add(style.fullScreen);
+    rootBody.style.margin = '0';
+    rootBody.style.padding = '0';
+  } else {
+    rootBody.style.margin = '0';
+    rootBody.style.padding = '0';
+  }
+
+  var fileContainer = document.createElement('div');
+  fileContainer.innerHTML = `<div class="${
+    style.bigFileDrop
+  }"/><input type="file" accept=".zip,.ts" style="display: none;"/>`;
+  myContainer.appendChild(fileContainer);
+
+  var fileInput = fileContainer.querySelector('input');
+
+  function handleFile(e) {
+    preventDefaults(e);
+    var dataTransfer = e.dataTransfer;
+    var files = e.target.files || dataTransfer.files;
+    if (files.length === 1) {
+      myContainer.removeChild(fileContainer);
+      var ext = files[0].name.split('.').slice(-1)[0];
+      load(myContainer, { file: files[0], ext });
+    }
+  }
+
+  fileInput.addEventListener('change', handleFile);
+  fileContainer.addEventListener('drop', handleFile);
+  fileContainer.addEventListener('click', (e) => fileInput.click());
+  fileContainer.addEventListener('dragover', preventDefaults);
+}
+
+
+export function foo(myParams) {
+
+  var userParams = vtkURLExtract.extractURLParameters(true, myParams);
+  if (userParams.file || userParams.fileURL) {
+    var exampleContainer = document.querySelector('.content');
+    var rootBody = document.querySelector('body');
+    var myContainer = exampleContainer || rootBody;
+
+    if (myContainer) {
+      myContainer.classList.add(style.fullScreen);
+      rootBody.style.margin = '0';
+      rootBody.style.padding = '0';
+    }
+    load(myContainer, userParams);
+    window.console.log("done calling load()");
+    buildOrientationMarker();
+    toggleNorth();
+  }
+}
+
+/***
+   MAIN 
+***/
+
+//   Add class to body if iOS device 
+if (iOS) {
+  document.querySelector('body').classList.add('is-ios-device');
+}
+
+var myParams=window.location.search;
+
+// to accept the url being sent from the service
+window.addEventListener('message', function(event) {
+      window.console.log("view3DIfran, received a message..");
+      var origin = event.origin;
+      if (origin != "http://localhost" && origin != "http://asperity.scec.org" ) {
+          window.console.log("view3DIfram, bad message origin >>", origin);
+          return;
+      }
+
+      if (typeof event.data == 'object' && event.data.call=='fromSCEC') {
+          myParams="?"+decodeURI(event.data.value);
+          } else {
+            window.console.log("view3DIfram, invalid event data >>",event.data);
+      }
+});
+
+
+window.console.log("initial myParams is ",myParams);
+
+if( myParams == undefined || myParams.includes("?2Long") ) {
+
+  window.top.postMessage({'call':'from3DViewer', value:'send params'}, '*');
+
+  var waitInterval = setInterval(function () {
+    if ( !myParams.includes("?2Long") ) {
+      window.console.log("GOT params from service, size is >> ",myParams.length);
+
+      foo(myParams);
+
+      clearInterval(waitInterval);
+      waitInterval=0;
+      } else {
+         window.console.log("Looping in interval..",waitInterval);
+    }
+  }, 1000);
+} else {
+
+  foo(myParams);
+}
+
+// Auto setup if no method get called within 100ms
+setTimeout(() => {
+  if (autoInit) {
+    autoInitLocalFileLoader();
+    buildOrientationMarker();
+    toggleNorth();
+  }
+}, 100);
+
+
+// -----------------------------------------------------------
+// Make some variables global so that you can inspect and
+// modify objects in your browser's developer console:
+// -----------------------------------------------------------
+
+global.fileCount = fileCount;
+global.fileIdx = fileIdx;
+global.toggleBounds = toggleBounds;
+global.toggleNorthByBtn = toggleNorthByBtn;
+global.toggleLegend = toggleLegend;
+global.changeColor = changeColor;
+global.changeOpacity = changeOpacity;
+global.toggleRepresentation = toggleRepresentation;
+global.toggleTraceAndFault = toggleTraceAndFault;
+global.toggleShoreline = toggleShoreline;
+global.downloadImage = downloadImage;
+global.scene = scene;
+global.fullScreenRenderer = fullScreenRenderer;
+
