@@ -246,8 +246,8 @@ function deleteFaultNameSvgLayer(id) {
 
 function downloadImage() {
   let d=new Date();
-  let timestamp = d.getTime();
-  let delta=Math.floor((timestamp - hold_uid)/1000); // in seconds
+  let timestamp = Math.floor(d.getTime()/1000); // in seconds
+  let delta=(timestamp - hold_uid);
   let fstub = 'CFM_3Dview_'+hold_uid+"_"+delta;
 
   renderWindow.captureImages()[0].then(
