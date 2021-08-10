@@ -1,5 +1,7 @@
- 
+
+/*************************/
 /* SCEC vtk.js ts viewer */
+/*************************/
 
 /*NOTE: zip fileURL input with background ts is not implemented */
 
@@ -34,19 +36,27 @@ import vtkPointSet from 'vtk.js/Sources/Common/DataModel/PointSet';
 import vtkPolyData from 'vtk.js/Sources/Common/DataModel/PolyData';
 
 import vtkGMTReader from 'vtk.js/Sources/IO/Geometry/GMTReader';
+import vtkEQReader from 'vtk.js/Sources/IO/Geometry/EQReader';
 
 // for making SVG layer
 import vtkSVGRepresentation from 'vtk.js/Sources/Widgets/SVG/SVGRepresentation';
 
 import style from './TSViewer.module.css';
 
+/*****
+var myContainer = container || exampleContainer || rootBody;options>> viewUID=uid&viewerType=CFM&fileURL=[file1,file2]&name=[name1,name2]&filePATH=[path]
+*****/
+
 const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
 var autoInit = false;// disable the file drop option
 var fileCount = 0;
 var fileIdx = 0;
+var viewerType = "CFM"; //  or "GFM"
 
 // hold fault name embeded as svg/g layer
 const hold_name_layer=[];
+const hold_fault_file_location=[];
+var hold_uid=0;
 
 /** housekeeping on actor **/
 // 3D actor for each fault line, one per tsurf file,
@@ -62,6 +72,10 @@ const coast_scene = [];
 // trace_scene.push({ name, source/polydata, mapper, actor });
 const trace_scene = [];
 const blind_scene = [];
+
+// seismicity
+const hauksson_scene = [];
+const ross_scene = [];
 
 var GMT_cnt=0;
 var toggled;
@@ -155,6 +169,7 @@ function addSCECImgLabel() {
   // reset the svg
 // upper right
 //  svgRoot.setAttribute('style', 'position:absolute; top:10px; right:15px; width: 60px; height:40px; border:6px solid #F9F9F9;background:#990000;opacity:80%;');
+
 // lower left
   svgRoot.setAttribute('style', 'position:absolute; bottom:15px; left:15px; width: 60px; height:40px; border:6px solid #F9F9F9;background:#990000;opacity:80%;');
 
@@ -192,7 +207,6 @@ function makeSCECSvgLayer() {
   var id=2;
   var elt=insertFaultNameSvgLayer("fault-abc",id,20,40);
   hold_name_layer.push({fault_id:id,layer:elt});
-  window.console.log("HERE..");
 
   id = 3;
   elt=insertFaultNameSvgLayer("fault-xyz",id,20,40);
@@ -231,32 +245,18 @@ function deleteFaultNameSvgLayer(id) {
 
 
 function downloadImage() {
-  let ttmp=renderWindow.captureImages();
-
-/*XXX try to figure out how to get svg to be brought in.. */
-  var svg=document.querySelector('svg');
-
-  var xvml=new XMLSerializer().serializeToString(svg);
-  var svg64=btoa(xml);
-  var b64Start="data:image/svg+xml;base64,";
-  var image64 = b64Start + svg64;
-
-  var canvas = openGLRenderWindow.getCanvas();
-  var cdurl=c.toDataURL();
-  var ctx=canvas.getContext('2d');
-  var img=ctx.drawImage();
-/*  */
+  let d=new Date();
+  let timestamp = d.getTime();
+  let delta=Math.floor((timestamp - hold_uid)/1000); // in seconds
+  let fstub = 'CFM_3Dview_'+hold_uid+"_"+delta;
 
   renderWindow.captureImages()[0].then(
     (image) => { 
-      /* window.console.log(image); */ 
         let tmp=image;
-
-        let d=new Date();
-        let timestamp = d.getTime();
         let a = document.createElement('a');
         a.href = image;
-        a.download = 'CFM_3Dview_'+timestamp+'.png';
+        let imagename = fstub + '.png';
+        a.download = imagename;
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
@@ -331,8 +331,10 @@ function trim4Name(fname) {
 ***/
      }
    }
+   // replace all underline with space
+   var nnname = nname.replace(/_/g, " ");
 
-   return nname;
+   return nnname;
 }
 
 
@@ -352,7 +354,7 @@ function loadGMTContent(gmtContent, gtype) {
     var actor = vtkActor.newInstance();
 
     var prop = vtkProperty.newInstance();
-    prop.setLineWidth(600);
+    prop.setLineWidth(1);
     prop.setOpacity(1);
 
     switch (gtype) {
@@ -368,7 +370,8 @@ function loadGMTContent(gmtContent, gtype) {
          break;
       case 'coast':
          coast_scene.push({ name, source, mapper, actor });
-         prop.setColor(0,0.5,1); 
+         prop.setColor(0,0,0); 
+         prop.setLineWidth(200);
          break;
     }
 
@@ -378,7 +381,7 @@ function loadGMTContent(gmtContent, gtype) {
     mapper.setInputData(source);
     renderer.addActor(actor);
   }
-  window.console.log("loadingGMT..",nbOutputs);
+//  window.console.log("loadingGMT.. with "+nbOutputs);
   GMT_cnt++;
   if(GMT_cnt == 3 && toggled == undefined) {
     if(final_bounds_scene.length > 0 ) {
@@ -389,10 +392,69 @@ function loadGMTContent(gmtContent, gtype) {
   }
 }
 
+/***
+  HAUKSSON + ROSS TRACES
+***/
+function loadEQContent(eqContent,etype,renderer,renderWindow) {
+  const eqReader = vtkEQReader.newInstance();
+  let eqContentString=Decodeuint8arr(eqContent);
+  eqReader.parseAsText(eqContentString);
+  const nbOutputs = eqReader.getNumberOfOutputPorts();
+
+  for (let idx = 0; idx < nbOutputs; idx++) {
+    var source = eqReader.getOutputData(idx); // polydata
+    var meta = source.get('meta').meta;
+    var jmeta = JSON.parse(meta);
+    var color = jmeta['color'];
+    var sz = jmeta['size'];
+    var r=color['r'];
+    var g=color['g'];
+    var b=color['b'];
+    var mapper = vtkMapper.newInstance();
+    var actor = vtkActor.newInstance();
+
+    var prop = vtkProperty.newInstance();
+    prop.setOpacity(1);
+//    window.console.log( "size of hypocenter>>"+sz);
+
+    switch (etype) {
+      case 'hauksson':
+         hauksson_scene.push({ name, source, mapper, actor });
+         prop.setEdgeVisibility(true);
+         prop.setPointSize(sz);
+         prop.setColor(r,g,b);
+         break;
+      case 'ross':
+         ross_scene.push({ name, source, mapper, actor });
+         prop.setEdgeVisibility(true);
+         prop.setPointSize(sz);
+         prop.setColor(r,g,b);
+         break;
+    }
+    actor.setProperty(prop);
+    actor.setVisibility(0);
+    actor.setMapper(mapper);
+    mapper.setInputData(source);
+    renderer.addActor(actor);
+  }
+//  window.console.log("loadingEQ.. with "+nbOutputs);
+}
+
+function retrieveQuakeTraces(container) {
+  const hauksson_file="cfm_data/hauksson_CFM.utm";
+  const ross_file="cfm_data/ross_CFM.utm";
+
+  HttpDataAccessHelper.fetchBinary(hauksson_file, {}).then((content) => {
+      loadEQContent(content,'hauksson',renderer,renderWindow);
+  });
+  HttpDataAccessHelper.fetchBinary(ross_file, {}).then((content) => {
+      loadEQContent(content,'ross',renderer,renderWindow);
+  });
+}
 
 function retrieveSurfaceTraces(container) {
-  const blind_file="cfm_data/CFM5.2_blind.utm"
-  const trace_file="cfm_data/CFM5.2_traces.utm"
+  const blind_file="cfm_data/cfm_blind.utm"
+  const trace_file="cfm_data/cfm_traces.utm"
 
   HttpDataAccessHelper.fetchBinary(blind_file, {}).then((content) => {
       loadGMTContent(content, 'blind');
@@ -659,6 +721,35 @@ vw.onOrientationChange(({ up, direction0, action, event }) => {
   renderer.resetCamera();
   renderWindow.render();
 }
+/***
+  QUAKE
+***/
+// 0, none
+// 1, hauksson
+// 2, ross
+var toQuake=0;
+function toggleSeismicity() {
+  toQuake = ( toQuake + 1 ) % 3;
+  window.console.log("toQuake is.."+toQuake);
+  // turn off everything..
+  hauksson_scene.forEach((item, idx) => {
+      var actor=item.actor;
+      if(toQuake==1) {
+        actor.setVisibility(1);
+        } else { 
+          actor.setVisibility(0);
+      }
+  })
+  ross_scene.forEach((item, idx) => {
+      var actor=item.actor;
+      if(toQuake==2) {
+        actor.setVisibility(1);
+        } else { 
+          actor.setVisibility(0);
+      }
+  })
+  renderWindow.render();
+}
 
 /***
   VIEW
@@ -812,7 +903,6 @@ function changeOpacity(idx,opacity) {
 function addFinalBoundingBox() {
   var outline = vtkOutlineFilter.newInstance();
   final_bb=boundingBox.getBounds();
-  window.console.log("Final..",final_bb);
   outline.setInputData(boundingBox);
 
   var mapper = vtkMapper.newInstance();
@@ -827,7 +917,6 @@ function addFinalBoundingBox() {
 
   renderer.resetCamera();
   renderWindow.render();
-  window.console.log("added final bounding box");
 }
 
 function addBoundingBox(data,name) {
@@ -903,7 +992,7 @@ function setBoundsToNone() {
 // iterating mulitple times as data increases
 function buildControlLegend() {
   var htmlBuffer = [
-    '<style> .visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;} .dropdown { position: relative; display: inline-block; font-size:8pt } .dropdown-content { display: none; position: relative; background-color: #f2f2f2; width: 140px; padding: 0px 4px 0px 10px; z-index: 1; } .dropdown:hover .dropdown-content { display: block; } </style>',
+    '<style> .visible { font-weight: bold; } .click { cursor: pointer; min-width: 150px;} .dropdown { position: relative; display: inline-block; font-size:6pt } .dropdown-content { display: none; position: relative; background-color:transparent; width: 160px; padding: 0px 4px 0px 10px; z-index: 1; } .dropdown:hover .dropdown-content { display: block; } table td, th { border: 0px solid #ced4da; padding: 0; } table tr th { background-color: #F2F2F2; } </style>',
     ];
   htmlBuffer.push(
     `<button id="Boundsbtn" type="button" title="show bounding boxes" onClick="toggleBounds()" style='display:none;'></button>`
@@ -913,6 +1002,9 @@ function buildControlLegend() {
     );
   htmlBuffer.push(
     `<button id="Legendbtn" type="button" title="show Legend" onClick="toggleLegend()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Quakebtn" type="button" title="switch Quake" onClick="toggleSeismicity()" style='display:none;'></button>`
     );
   htmlBuffer.push(
     `<button id="Reprbtn" type="button" title="switch Repr" onClick="toggleRepresentation()" style='display:none;'></button>`
@@ -927,7 +1019,7 @@ function buildControlLegend() {
     `<button id="Downloadbtn" type="button" title="download screenshot" onClick="downloadImage()" style='display:none;'></button>`
     );
   htmlBuffer.push(
-    `<table><thead><tr class=size-row" aria-hidden="true"></tr></thead>`);
+    `<div style="max-height:70vh; max-width:35vw; overflow:auto; margin:-1px -6px -1px -2px;"><table><thead><tr class=size-row" aria-hidden="true"></tr></thead>`);
   htmlBuffer.push(`<tbody>`);
   scene.forEach((item, idx) => {
     var ii=item;
@@ -946,7 +1038,7 @@ function buildControlLegend() {
 </div>
     </td></tr>`);
   });
-  htmlBuffer.push(`</tbody>`);
+  htmlBuffer.push(`</tbody></table></div>`);
 
   // remove old one
   fullScreenRenderer.removeController();
@@ -1092,11 +1184,24 @@ function loadTSContent(tsContent, name) {
   renderer.resetCamera();
   renderWindow.render();
   if(fileIdx == fileCount) {
+
+    //window.console.log("HERE HERE");
+    //window.console.log("TO-server, done loading");
+    window.top.postMessage({'call':'from3DViewer', value:'done with loading'}, '*');
+
     addFinalBoundingBox();
     makeSCECSvgLayer();
     if(toggled === undefined && GMT_cnt == 3) {
       toggled=true;
-      toggleTraceAndFault(); 
+//      window.console.log("---CALLed with FOUND ",viewerType);
+      if (viewerType == "CFM") {
+//        window.console.log("---CALLed with CFM");
+        toggleTraceAndFault(); 
+      }
+      if (viewerType == "GFM") {
+//        window.console.log("---CALLed with GFM");
+        offTraceAndFault(); 
+      }
       toggleShoreline();
     }
   }
@@ -1123,6 +1228,7 @@ export function load(container, options) {
 
   retrieveSurfaceTraces(container);
   retrieveShoreline(container);
+  retrieveQuakeTraces(container);
 
 // option : file
   if (options.file) {
@@ -1164,7 +1270,9 @@ export function load(container, options) {
 
     fileCount=options.fileURL.length;
     function retrieveFileContent(fname, name) {
+
       window.console.log("retrieveFileContent, fname>>",fname);
+      hold_fault_file_location.push(fname);
 
       var ext = fname.substr((fname.lastIndexOf('.') + 1));
       var progressContainer = document.createElement('div');
@@ -1200,13 +1308,15 @@ export function load(container, options) {
 // or fileURL=f1
     let op=options.fileURL;
     let path=options.filePATH;
+    // single set
     if(typeof op === 'string') {
+          nm=trim4Name(op);
         if(path) {
           retrieveFileContent(path+op, trim4Name(op));
           } else {
             retrieveFileContent(op, trim4Name(op));
         }
-        } else {
+        } else { // a whole set
           let cnt=op.length;
           for(var i=0; i<cnt; i++) {
             let f=op[i];
@@ -1276,8 +1386,16 @@ export function foo(myParams) {
       rootBody.style.margin = '0';
       rootBody.style.padding = '0';
     }
+    if (userParams.viewerType) {
+      viewerType=userParams.viewerType;
+    }
+    if (userParams.viewUID) {
+      hold_uid=userParams.viewUID;
+    }
+
+    //window.console.log("TO-Server, start loading");
+    window.top.postMessage({'call':'from3DViewer', value:'start loading'}, '*');
     load(myContainer, userParams);
-    window.console.log("done calling load()");
     buildOrientationMarker();
     toggleNorth();
   }
@@ -1295,10 +1413,17 @@ if (iOS) {
 var myParams=window.location.search;
 
 // to accept the url being sent from the service
-window.addEventListener('message', function(event) {
-      window.console.log("view3DIfran, received a message..");
+
+// only add it when the html is up and ready
+window.addEventListener("DOMContentLoaded", function () {
+
+  //window.console.log("TO-Server: ready");
+  window.top.postMessage({'call':'from3DViewer', value:'ready'}, '*');
+
+  window.addEventListener('message', function(event) {
+      window.console.log("view3DIfram, received a message..");
       var origin = event.origin;
-      if (origin != "http://localhost" && origin != "http://asperity.scec.org" ) {
+      if (origin != "http://localhost:8081" && origin != "http://moho.scec.org" && origin != "https://www.scec.org" ) {
           window.console.log("view3DIfram, bad message origin >>", origin);
           return;
       }
@@ -1306,20 +1431,23 @@ window.addEventListener('message', function(event) {
       if (typeof event.data == 'object' && event.data.call=='fromSCEC') {
           myParams="?"+decodeURI(event.data.value);
           } else {
-            window.console.log("view3DIfram, invalid event data >>",event.data);
+            window.console.log("view3DIfram, received invalid event data >>"+event.data+" from "+origin);
       }
-});
+  },false);
+
+},false);
 
 
 window.console.log("initial myParams is ",myParams);
 
 if( myParams == undefined || myParams.includes("?2Long") ) {
 
+  //window.console.log("TO-Server: send me params");
   window.top.postMessage({'call':'from3DViewer', value:'send params'}, '*');
 
   var waitInterval = setInterval(function () {
     if ( !myParams.includes("?2Long") ) {
-      window.console.log("GOT params from service, size is >> ",myParams.length);
+//      window.console.log("GOT params from service, size is >> ",myParams.length);
 
       foo(myParams);
 
@@ -1332,6 +1460,7 @@ if( myParams == undefined || myParams.includes("?2Long") ) {
 } else {
 
   foo(myParams);
+
 }
 
 // Auto setup if no method get called within 100ms
@@ -1356,6 +1485,7 @@ global.toggleNorthByBtn = toggleNorthByBtn;
 global.toggleLegend = toggleLegend;
 global.changeColor = changeColor;
 global.changeOpacity = changeOpacity;
+global.toggleSeismicity = toggleSeismicity;
 global.toggleRepresentation = toggleRepresentation;
 global.toggleTraceAndFault = toggleTraceAndFault;
 global.toggleShoreline = toggleShoreline;

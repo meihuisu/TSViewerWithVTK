@@ -1,5 +1,7 @@
  
+/*************************/
 /* SCEC vtk.js ts viewer */
+/*************************/
 
 /*NOTE: zip fileURL input with background ts is not implemented */
 
@@ -40,10 +42,15 @@ import vtkSVGRepresentation from 'vtk.js/Sources/Widgets/SVG/SVGRepresentation';
 
 import style from './TSViewer.module.css';
 
+/*****
+options>> viewType=CFM&fileURL=[file1,file2]&name=[name1,name2]&filePATH=[path]
+*****/
+
 const iOS = /iPad|iPhone|iPod/.test(window.navigator.platform);
 var autoInit = false;// disable the file drop option
 var fileCount = 0;
 var fileIdx = 0;
+var viewType= "CFM";
 
 // hold fault name embeded as svg/g layer
 const hold_name_layer=[];
@@ -229,28 +236,9 @@ function deleteFaultNameSvgLayer(id) {
   container.removeChild(div_elt);
 }
 
-
-
 function downloadImage() {
-  let ttmp=renderWindow.captureImages();
-
-/*XXX try to figure out how to get svg to be brought in.. 
-  var svg=document.querySelector('svg');
-
-  var xvml=new XMLSerializer().serializeToString(svg);
-  var svg64=btoa(xvml);
-  var b64Start="data:image/svg+xml;base64,";
-  var image64 = b64Start + svg64;
-
-  var canvas = openGLRenderWindow.getCanvas();
-  var cdurl=canvas.toDataURL();
-??  var ctx=canvas.getContext('2d');
-??  var img=ctx.drawImage(image64);
-*/
-
   renderWindow.captureImages()[0].then(
     (image) => { 
-      /* window.console.log(image); */ 
         let tmp=image;
 
         let d=new Date();
@@ -1099,6 +1087,7 @@ function loadTSContent(tsContent, name) {
     makeSCECSvgLayer();
     if(toggled === undefined && GMT_cnt == 3) {
       toggled=true;
+      if(viewType == "CFM") {
 /* GFM case, skip the traces
       toggleTraceAndFault(); 
 */
@@ -1283,6 +1272,9 @@ export function foo(myParams) {
       rootBody.style.margin = '0';
       rootBody.style.padding = '0';
     }
+    if (userParams.viewType) {
+        viewType=userParams.viewType;
+    }
     load(myContainer, userParams);
     window.console.log("done calling load()");
     buildOrientationMarker();
@@ -1305,7 +1297,7 @@ var myParams=window.location.search;
 window.addEventListener('message', function(event) {
       window.console.log("view3DIfran, received a message..");
       var origin = event.origin;
-      if (origin != "http://localhost" && origin != "http://asperity.scec.org" ) {
+      if (origin != "http://localhost" && origin != "http://moho.scec.org" ) {
           window.console.log("view3DIfram, bad message origin >>", origin);
           return;
       }
