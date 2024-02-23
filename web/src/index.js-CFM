@@ -52,11 +52,18 @@ var autoInit = false;// disable the file drop option
 var fileCount = 0;
 var fileIdx = 0;
 var viewerType = "CFM"; //  or "GFM"
+var evalMode = 0; // in evalMode, fault color is either gold or blue
+
+var cameraOkay = 0;
 
 // hold fault name embeded as svg/g layer
 const hold_name_layer=[];
 const hold_fault_file_location=[];
+const hold_fault_file_name=[];
 var hold_uid=0;
+var hold_trace=0;
+var hold_blind=0;
+const hold_clippingRange=[];
 
 /** housekeeping on actor **/
 // 3D actor for each fault line, one per tsurf file,
@@ -77,7 +84,6 @@ const blind_scene = [];
 const hauksson_scene = [];
 const ross_scene = [];
 
-var GMT_cnt=0;
 var toggled;
 
 // bounding box, one  per fault line
@@ -265,18 +271,83 @@ function downloadImage() {
   );
 }
 
-function debug_printCamera(note) {
+function print_camera(note) {
   let pos=activeCamera.getPosition();
   let angle=activeCamera.getViewAngle();
+  let distance=activeCamera.getDistance();
   let vmatrix=activeCamera.getViewMatrix();
   let viewup=activeCamera.getViewUp();
   let focal=activeCamera.getFocalPoint();
-  window.console.log("===camera, "+note);
-  window.console.log("  position "+pos.toString());
-  window.console.log("  angle    ",angle);
-  window.console.log("  viewup   "+viewup.toString());
-  window.console.log("  focal    "+focal.toString());
-  window.console.log("  viewMatrix    "+vmatrix.toString());
+
+  let clippingRange=activeCamera.getClippingRange();
+
+  window.console.log("plot3d >>  CAMERA NOTE:"+note);
+  window.console.log("plot3d >>     position "+pos.toString());
+  window.console.log("plot3d >>     angle    "+angle);
+  window.console.log("plot3d >>     viewup   "+viewup.toString());
+  window.console.log("plot3d >>     focal    "+focal.toString());
+  window.console.log("plot3d >>     distance    "+distance);
+  window.console.log("plot3d >>     clippingRange    "+clippingRange.toString());
+  
+}
+
+function extract_camera() {
+  let pos=activeCamera.getPosition();
+  let angle=activeCamera.getViewAngle();
+  let distance=activeCamera.getDistance();
+  let vmatrix=activeCamera.getViewMatrix();
+  let viewup=activeCamera.getViewUp();
+  let focal=activeCamera.getFocalPoint();
+
+// let clippingRange=activeCamera.getClippingRange();
+  hold_clippingRange.push(activeCamera.getClippingRange());
+
+  let camera_info = { "pos":pos, "angle":angle, "viewup":viewup, "distance":distance, "focal":focal};
+  let camera_info_str= JSON.stringify(camera_info);
+  return camera_info_str;
+}
+
+// get camera information and send back to the parent
+function sendCamera2service() {
+  let camera_info=extract_camera()
+window.console.log("plot3d >> TO-SERVER: camera info");
+  window.top.postMessage({'call':'from3DViewer camera', value:camera_info}, '*');
+}
+
+//{"pos":[0,1,0],"angle":30,"viewup":[0,0,-1],"focal":[0,0,0]
+function goto_newCamera(camera_str) {
+  var track_shore=offShoreline();
+  var track_trace=offTraceAndFault();
+ 
+  let camera_info = JSON.parse(camera_str);
+  let pos=camera_info['pos'];
+  let angle=camera_info['angle'];
+  let distance=camera_info['distance'];
+  let viewup=camera_info['viewup'];
+  let focal=camera_info['focal'];
+  let tmp=camera_info['viewMatrix'];
+
+//  print_camera("before the resetCamera call");
+  renderer.resetCamera();
+
+  if(pos) { activeCamera.setPosition(pos[0], pos[1], pos[2]); }
+  if(focal) { activeCamera.setFocalPoint(focal[0], focal[1], focal[2]); }
+  if(angle) { activeCamera.setViewAngle(angle); }
+  if(viewup) { activeCamera.setViewUp(viewup[0], viewup[1], viewup[2]); }
+  if(tmp) {
+    let matrix= [tmp[0],tmp[1],tmp[2],tmp[3],tmp[4],tmp[5],tmp[6],tmp[7],tmp[8],tmp[9],tmp[10],tmp[11],tmp[12],tmp[13],tmp[14],tmp[15]];
+    activeCamera.setViewMatrix(matrix);
+  }
+  if(distance) { activeCamera.setDistance(distance); }
+
+  orientationWidget.updateMarkerOrientation();
+  renderer.resetCamera();
+  renderWindow.render();
+// print_camera("after the resetCamera call");
+
+  // bring shore/trace back if had to hide them earlier
+  if(track_shore) { toggleShoreline(); }
+  if(track_trace) { toggleTraceAndFault(); }
 }
 
 // when an entry on legend list get clicked,
@@ -381,21 +452,24 @@ function loadGMTContent(gmtContent, gtype) {
     mapper.setInputData(source);
     renderer.addActor(actor);
   }
-//  window.console.log("loadingGMT.. with "+nbOutputs);
-  GMT_cnt++;
-  if(GMT_cnt == 3 && toggled == undefined) {
+
+  if(toggled === undefined && 
+            retrieveSurfaceTraces_done() && retrieveShoreline_done()) {
     if(final_bounds_scene.length > 0 ) {
       toggled=true;
       toggleTraceAndFault(); 
       toggleShoreline();
     }
   }
+  postRetrieveProcessing();
 }
 
 /***
   HAUKSSON + ROSS TRACES
 ***/
 function loadEQContent(eqContent,etype,renderer,renderWindow) {
+
+window.console.log("plot3d >> loadingEQContent "+etype);
   const eqReader = vtkEQReader.newInstance();
   let eqContentString=Decodeuint8arr(eqContent);
   eqReader.parseAsText(eqContentString);
@@ -415,7 +489,7 @@ function loadEQContent(eqContent,etype,renderer,renderWindow) {
 
     var prop = vtkProperty.newInstance();
     prop.setOpacity(1);
-//    window.console.log( "size of hypocenter>>"+sz);
+//    window.console.log("plot3d >> size of hypocenter>>"+sz);
 
     switch (etype) {
       case 'hauksson':
@@ -437,10 +511,20 @@ function loadEQContent(eqContent,etype,renderer,renderWindow) {
     mapper.setInputData(source);
     renderer.addActor(actor);
   }
-//  window.console.log("loadingEQ.. with "+nbOutputs);
+
+  postRetrieveProcessing();
+}
+
+function retrieveQuakeTraces_done() {
+  if(hauksson_scene.length == 0)
+     return 0;
+  if(ross_scene.length == 0)
+     return 0;
+  return 1; 
 }
 
 function retrieveQuakeTraces(container) {
+//window.console.log("plot3d >> retrieveQuakeTraces");
   const hauksson_file="cfm_data/hauksson_CFM.utm";
   const ross_file="cfm_data/ross_CFM.utm";
 
@@ -452,9 +536,20 @@ function retrieveQuakeTraces(container) {
   });
 }
 
+function retrieveSurfaceTraces_done() {
+  if(blind_scene.length == 0)
+    return 0;
+  if(trace_scene.length == 0)
+    return 0;
+  return 1;
+}
+
 function retrieveSurfaceTraces(container) {
-  const blind_file="cfm_data/cfm_blind.utm"
-  const trace_file="cfm_data/cfm_traces.utm"
+  const blind_file="cfm_data/"+hold_blind;
+  const trace_file="cfm_data/"+hold_trace;
+
+window.console.log("plot3d >>  traces:"+trace_file);
+window.console.log("plot3d >>  blind:"+blind_file);
 
   HttpDataAccessHelper.fetchBinary(blind_file, {}).then((content) => {
       loadGMTContent(content, 'blind');
@@ -491,7 +586,7 @@ function toggleTraceAndFault()
 {
   var cnt=actorList.length;
   if(cnt == 0) {
-    window.console.log("ERROR: trace list is empty");
+    window.console.log("plot3d >> ERROR: trace list is empty");
     return;
   }
   for(let i=0;i<cnt; i++) {
@@ -500,7 +595,7 @@ function toggleTraceAndFault()
     item.setVisibility(!vis);
   };
   renderWindow.render();
-  window.console.log("toggleTraceAndFault");
+  window.console.log("plot3d >> toggleTraceAndFault");
 }
 
 function retrieveShoreline(container) {
@@ -514,10 +609,16 @@ function retrieveShoreline(container) {
   });
 }
 
+function retrieveShoreline_done() {
+  if(coast_scene.length == 0)
+    return 0;
+  return 1;
+}
+
 function toggleShoreline() {
   let cnt=coast_scene.length;
   if(cnt == 0) {
-    window.console.log("ERROR: shoreline is empty");
+    window.console.log("plot3d >> ERROR: shoreline is empty");
     return;
   }
 
@@ -528,7 +629,7 @@ function toggleShoreline() {
     actor.setVisibility(!vis);
   };
   renderWindow.render();
-  window.console.log("toggleShorline");
+  window.console.log("plot3d >> toggleShorline");
 }
 
 /***
@@ -603,7 +704,7 @@ function offTraceAndFault()
 {
   var cnt=actorList.length;
   if(cnt == 0) {
-    window.console.log("ERROR: trace list is empty");
+    window.console.log("plot3d >> ERROR: trace list is empty");
     return 0;
   }
   // need to toggle off ?
@@ -620,7 +721,7 @@ function offTraceAndFault()
 function offShoreline() {
   let cnt=coast_scene.length;
   if(cnt == 0) {
-    window.console.log("ERROR: shoreline is empty");
+    window.console.log("plot3d >> ERROR: shoreline is empty");
     return 0;
   }
   let item=coast_scene[0];
@@ -728,10 +829,56 @@ vw.onOrientationChange(({ up, direction0, action, event }) => {
 // 1, hauksson
 // 2, ross
 var toQuake=0;
+function _flipVis(target, vis) {
+
+  let sz=target.length;
+  for(let i=0; i<sz; i++) {
+    let item=target[i];
+    let actor=item.actor;
+    actor.setVisibility(vis);
+  }
+}
+
+function setSeismicity(val) {
+
+  window.console.log("plot3d >> setSeismicity..."+val);
+  window.console.log("plot3d >> Seismicity.. loading traces");
+  window.console.log("plot3d >> hauksson_scene..."+hauksson_scene.length);
+  window.console.log("plot3d >> ross_scene..."+ross_scene.length);
+
+  if(toQuake == val) {
+    // do nothing
+    return;
+  }
+  if(val == 0) {
+    if(toQuake == 1) { // turn off hauksson_scene
+      _flipVis(hauksson_scene, 0);
+    }
+    if(toQuake == 2) { // turn off ross_scene 
+      _flipVis(ross_scene, 0);
+    }
+  }
+  if(val == 1) { //turn on hauksson_scene
+    _flipVis(hauksson_scene, 1);
+    if(toQuake == 2) { //turn off ross_scene
+      _flipVis(ross_scene, 0);
+    }
+  }
+  if(val == 2) { //turn on ross_scene
+    _flipVis(ross_scene, 1);
+    if(toQuake == 1) { //turn off hauksson_scene
+      _flipVis(hauksson_scene, 0);
+    }
+  }
+
+  toQuake=val;
+  renderWindow.render();
+}
+
 function toggleSeismicity() {
   toQuake = ( toQuake + 1 ) % 3;
   window.console.log("toQuake is.."+toQuake);
-  // turn off everything..
+
   hauksson_scene.forEach((item, idx) => {
       var actor=item.actor;
       if(toQuake==1) {
@@ -809,17 +956,47 @@ function setRepresentationToPoints(property) {
       seeding-the-random-number-generator-in-javascript
 */
 var track_color_entry=0;
-var seed = 1;
-function nextValue() {
-    var x = Math.sin(seed++) * 10000;
+//var seed = 1;
+function nextValue(fake_seed) {
+    var x = Math.sin(fake_seed) * 10000;
     return (Math.round((x - Math.floor(x))*1000)/1000);
 }
- 
-function setInitialColor(property) {
+
+function _lookupFilenameIdx(name) {
+
+  let sz=hold_fault_file_name.length;
+  for(let i=0; i<sz; i++) {
+    if(hold_fault_file_name[i]== name)
+      return i;
+  }
+// this is not good
+  window.console.log("BAD...");
+  return -1;
+}
+
+function setInitialColor(property,name) {
    track_color_entry++;
-   let Rc=nextValue();
-   let Rg=nextValue();
-   let Rb=nextValue();
+   let idx= _lookupFilenameIdx(name);
+   let Rc, Rg, Rb;
+
+// in special evaluation mode 
+
+   if(evalMode) {
+     if(name.substring(0,2)=== "2:") { // GOLD
+       Rc=255/255;
+       Rg=215/255;
+       Rb=0/255;
+       } else {  // BLUE
+         Rc=0;
+         Rg=0;
+         Rb=1;
+     }
+   } else {
+       let fake_seed=(idx * 3)+1;
+       Rc=nextValue(fake_seed);
+       Rg=nextValue(fake_seed+1);
+       Rb=nextValue(fake_seed+2);
+   }
    property.setColor(Rc,Rg,Rb);
 }
 
@@ -1007,6 +1184,9 @@ function buildControlLegend() {
     `<button id="Quakebtn" type="button" title="switch Quake" onClick="toggleSeismicity()" style='display:none;'></button>`
     );
   htmlBuffer.push(
+    `<button id="SetQuakebtn" type="button" title="set Quake" onClick="setSeismicity(this.value)" value=0 style='display:none;'></button>`
+    );
+  htmlBuffer.push(
     `<button id="Reprbtn" type="button" title="switch Repr" onClick="toggleRepresentation()" style='display:none;'></button>`
     );
   htmlBuffer.push(
@@ -1017,6 +1197,9 @@ function buildControlLegend() {
     );
   htmlBuffer.push(
     `<button id="Downloadbtn" type="button" title="download screenshot" onClick="downloadImage()" style='display:none;'></button>`
+    );
+  htmlBuffer.push(
+    `<button id="Camerabtn" type="button" title="get Camera view" onClick="sendCamera2service()" style='display:none;'></button>`
     );
   htmlBuffer.push(
     `<div style="max-height:70vh; max-width:35vw; overflow:auto; margin:-1px -6px -1px -2px;"><table><thead><tr class=size-row" aria-hidden="true"></tr></thead>`);
@@ -1031,7 +1214,7 @@ function buildControlLegend() {
 <input type="color" id="color_${idx}" name="${idx}" style="width:20px;" value="${color_hex}" onchange=changeColor(${idx},this.value)>
 </td><td>
 <div class="dropdown" >
-   <div class="visible" id="legend_${idx}" data-index="${idx}">${item.name}</div>
+   <div class="visible" id="legend_${idx}" style="font-size:1.6em" data-index="${idx}">${item.name}</div>
    <div class="row dropdown-content">
       Opacity:&nbsp<input type="range" id="opacity_${idx}" type="button" style="width:60px" min="0" max="1" step="0.1" value="0.8" onchange=changeOpacity(${idx},this.value)>
    </div>
@@ -1110,11 +1293,12 @@ function loadZipContent(zipContent) {
                name = trim4Name(tsFilePath);
             }
             scene.push({ name, source, mapper, actor });
+window.console.log("THIS is where scence is made..", name);
             boundingBox.addBounds(source.getBounds());
             addBoundingBox(source);
 // color
             var prop = vtkProperty.newInstance();
-            setInitialColor(prop);
+            setInitialColor(prop, name);
             prop.setOpacity(0.8);
             actor.setProperty(prop);
 
@@ -1163,13 +1347,14 @@ function loadTSContent(tsContent, name) {
     var actor = vtkActor.newInstance();
 
     scene.push({ name, source, mapper, actor});
+//window.console.log("PUSHING.. scene >>>"+name);
     boundingBox.addBounds(source.getBounds());
     addBoundingBox(source,name);
 
 // color & representation
     var prop = vtkProperty.newInstance();
     setRepresentationToSurface(prop);
-    setInitialColor(prop);
+    setInitialColor(prop, name);
     prop.setOpacity(0.8);
     actor.setProperty(prop);
 
@@ -1179,19 +1364,18 @@ function loadTSContent(tsContent, name) {
 
   }
   buildControlLegend();
-  window.console.log("loadTSContent..",name);
+//window.console.log("loadTSContent..",name);
   
   renderer.resetCamera();
   renderWindow.render();
   if(fileIdx == fileCount) {
-
-    //window.console.log("HERE HERE");
-    //window.console.log("TO-server, done loading");
-    window.top.postMessage({'call':'from3DViewer', value:'done with loading'}, '*');
+window.console.log("plot3d >> TO-SERVER: done loading traces");
+    window.top.postMessage({'call':'from3DViewer', value:'done with loading traces'}, '*');
 
     addFinalBoundingBox();
     makeSCECSvgLayer();
-    if(toggled === undefined && GMT_cnt == 3) {
+    if(toggled === undefined && 
+          retrieveSurfaceTraces_done() && retrieveShoreline_done()) {
       toggled=true;
 //      window.console.log("---CALLed with FOUND ",viewerType);
       if (viewerType == "CFM") {
@@ -1207,7 +1391,26 @@ function loadTSContent(tsContent, name) {
   }
 }
 
+
+/***
+   post message to SERVER when all the background traces are loaded
+   and also camera angled ??
+***/
+function postRetrieveProcessing() {
+  if(!retrieveSurfaceTraces_done())
+     return;
+  if(!retrieveShoreline_done())
+     return;
+  if(!retrieveQuakeTraces_done())
+     return;
+  if(cameraOkay) {
+window.console.log("plot3d >> TO-SERVER: done loading base traces");
+    window.top.postMessage({'call':'from3DViewer',value:'done with base trace loading'}, '*');
+  } 
+}
+
 export function load(container, options) {
+  window.console.log("plot3d >> TOP load");
   autoInit = false;
   emptyContainer(container);
 
@@ -1230,6 +1433,46 @@ export function load(container, options) {
   retrieveShoreline(container);
   retrieveQuakeTraces(container);
 
+  function retrieveFileContent(fname, name) {
+//    window.console.log("retrieveFileContent, fname>>",fname);
+    hold_fault_file_location.push(fname);
+    hold_fault_file_name.push(name);
+
+    var ext = fname.substr((fname.lastIndexOf('.') + 1));
+    var progressContainer = document.createElement('div');
+    progressContainer.setAttribute('class', style.progress);
+    container.appendChild(progressContainer);
+
+    var progressCallback = (progressEvent) => {
+      if (progressEvent.lengthComputable) {
+        var percent = Math.floor(
+          (100 * progressEvent.loaded) / progressEvent.total
+        );
+        progressContainer.innerHTML = `Loading ${percent}%`;
+      } else {
+        progressContainer.innerHTML = macro.formatBytesToProperUnit(
+          progressEvent.loaded
+        );
+      }
+    };
+ 
+    HttpDataAccessHelper.fetchBinary(fname, {
+      progressCallback,
+    }).then((content) => {
+      container.removeChild(progressContainer);
+      if(ext === 'ts') {  // plain ts file
+         loadTSContent(content, name);
+         } else { 
+           loadZipContent(content);
+      }
+    });
+  }
+
+// option: eval
+  if (options.eval) {
+    evalMode = 1;
+  }
+
 // option : file
   if (options.file) {
     if (options.ext === 'ts') {
@@ -1246,10 +1489,9 @@ export function load(container, options) {
           scene.push({ name, source, mapper, actor });
           boundingBox.addBounds(source.getBounds());
           addBoundingBox(source,name);
-
 // color
           var prop = vtkProperty.newInstance();
-          setInitialColor(prop);
+          setInitialColor(prop, name);
           prop.setOpacity(0.8);
           actor.setProperty(prop);
 
@@ -1265,72 +1507,54 @@ export function load(container, options) {
     } else {
       loadZipContent(options.file);
     }
-// option: fileURL XXX
-  } else if (options.fileURL) {
 
-    fileCount=options.fileURL.length;
-    function retrieveFileContent(fname, name) {
-
-      window.console.log("retrieveFileContent, fname>>",fname);
-      hold_fault_file_location.push(fname);
-
-      var ext = fname.substr((fname.lastIndexOf('.') + 1));
-      var progressContainer = document.createElement('div');
-      progressContainer.setAttribute('class', style.progress);
-      container.appendChild(progressContainer);
-
-      var progressCallback = (progressEvent) => {
-        if (progressEvent.lengthComputable) {
-          var percent = Math.floor(
-            (100 * progressEvent.loaded) / progressEvent.total
-          );
-          progressContainer.innerHTML = `Loading ${percent}%`;
-        } else {
-          progressContainer.innerHTML = macro.formatBytesToProperUnit(
-            progressEvent.loaded
-          );
-        }
-      };
-  
-      HttpDataAccessHelper.fetchBinary(fname, {
-        progressCallback,
-      }).then((content) => {
-        container.removeChild(progressContainer);
-        if(ext === 'ts') {  // plain ts file
-           loadTSContent(content, name);
-           } else { 
-             loadZipContent(content);
-        }
-      });
-    }
-
-// expect name=[n1,n2],fileURL=[f1,f2]
-// or fileURL=f1
-    let op=options.fileURL;
-    let path=options.filePATH;
-    // single set
-    if(typeof op === 'string') {
-          nm=trim4Name(op);
-        if(path) {
-          retrieveFileContent(path+op, trim4Name(op));
-          } else {
-            retrieveFileContent(op, trim4Name(op));
-        }
-        } else { // a whole set
-          let cnt=op.length;
-          for(var i=0; i<cnt; i++) {
-            let f=op[i];
-            if(path) {
-              f=path+f;
-            }
+  }  else { 
+    if (options.fullFileURL) {
+      fileCount=fileCount+options.fullFileURL.length;
+// expect fullName=[n1] fullFileURL=[f1]
+      let op=options.fullFileURL;
+      let cnt=op.length;
+      for(let i=0; i<cnt; i++) {
+          let f=op[i];
+          if(options.fullName) {
+              retrieveFileContent(f,options.fullName[i]);
+window.console.log(" >>>> trying to call GOLD..");
+//XXX     setResetColor2Gold(options.fullName[i]);
+              } else {
+                retrieveFileContent(f,trim4Name(f));
+          }
+       }
+    } // else if only one
+    if (options.fileURL) { // option: fileURL
+      fileCount=fileCount+options.fileURL.length;
+  // expect name=[n1,n2],fileURL=[f1,f2]
+  // or fileURL=f1
+      let op=options.fileURL;
+      let path=options.filePATH;
+      // single set
+      if(typeof op === 'string') {
+            nm=trim4Name(op);
+          if(path) {
+            retrieveFileContent(path+op, trim4Name(op));
+            } else {
+              retrieveFileContent(op, trim4Name(op));
+          }
+          } else { // a whole set
+            let cnt=op.length;
+            for(var i=0; i<cnt; i++) {
+              let f=op[i];
+              if(path) {
+                f=path+f;
+              }
             if(options.name) {
               retrieveFileContent(f,options.name[i]);
-              } else {
-                retrieveFileContent(f,trim4Name(op[i]));
+                } else {
+                  retrieveFileContent(f,trim4Name(op[i]));
+              }
             }
-          }
-     }
-  }// fileURL
+       }
+    }
+  }
 }
 
 export function autoInitLocalFileLoader(container) {
@@ -1376,7 +1600,7 @@ export function autoInitLocalFileLoader(container) {
 export function foo(myParams) {
 
   var userParams = vtkURLExtract.extractURLParameters(true, myParams);
-  if (userParams.file || userParams.fileURL) {
+  if (userParams.file || userParams.fileURL || userParams.fullFileURL) {
     var exampleContainer = document.querySelector('.content');
     var rootBody = document.querySelector('body');
     var myContainer = exampleContainer || rootBody;
@@ -1392,9 +1616,15 @@ export function foo(myParams) {
     if (userParams.viewUID) {
       hold_uid=userParams.viewUID;
     }
+    if (userParams.viewTrace) {
+      hold_trace=userParams.viewTrace;
+    }
+    if (userParams.viewBlind) {
+      hold_blind=userParams.viewBlind;
+    }
 
-    //window.console.log("TO-Server, start loading");
-    window.top.postMessage({'call':'from3DViewer', value:'start loading'}, '*');
+window.console.log("plot3d >> TO-SERVER: start loading");
+    window.top.postMessage({'call':'from3DViewer',value:'start loading'}, '*');
     load(myContainer, userParams);
     buildOrientationMarker();
     toggleNorth();
@@ -1417,51 +1647,67 @@ var myParams=window.location.search;
 // only add it when the html is up and ready
 window.addEventListener("DOMContentLoaded", function () {
 
-  //window.console.log("TO-Server: ready");
-  window.top.postMessage({'call':'from3DViewer', value:'ready'}, '*');
+window.console.log("plot3d >> TO-SERVER: I am ready");
+  window.top.postMessage({'call':'from3DViewer',value:'ready'}, '*');
 
   window.addEventListener('message', function(event) {
-      window.console.log("view3DIfram, received a message..");
       var origin = event.origin;
-      if (origin != "http://localhost:8081" && origin != "http://moho.scec.org" && origin != "https://www.scec.org" ) {
+      if (origin != "http://localhost:8082" && origin != "http://moho.scec.org" 
+            && origin != "https://moho.scec.org" 
+              && origin != "http://temp.scec.org" && origin != "https://www.scec.org" ) {
           window.console.log("view3DIfram, bad message origin >>", origin);
           return;
       }
 
-      if (typeof event.data == 'object' && event.data.call=='fromSCEC') {
+      window.console.log("view3DIfram, received a message :"+event.data.call);
+
+      if (typeof event.data == 'object' && event.data.call=='fromSCEC param') {
+window.console.log("  to-plot3d <<< param fromSCEC");
           myParams="?"+decodeURI(event.data.value);
-          } else {
+          foo(myParams);
+      } else if (typeof event.data == 'object' && event.data.call=='fromSCEC camera') {
+            let myCamera= decodeURI(event.data.value);
+window.console.log("  to-plot3d <<<  camera string fromSCEC "+myCamera);
+            goto_newCamera(myCamera);
+window.console.log("plot3d >> TO-SERVER: camera done");
+            window.top.postMessage({'call':'from3DViewer camera done', value:myCamera}, '*');
+            cameraOkay=1;
+            postRetrieveProcessing();
+      } else if (typeof event.data == 'object' && event.data.call=='fromSCEC done') {
+            let msg= event.data.value;
+window.console.log("  to-plot3d <<< done fromSCEC ("+msg+")");
+            //need to refresh the screen somehow
+            renderWindow.render();
+      } else {
             window.console.log("view3DIfram, received invalid event data >>"+event.data+" from "+origin);
       }
-  },false);
+  });
 
-},false);
-
-
-window.console.log("initial myParams is ",myParams);
-
+// and then tell server that we are ready..
+/***
+   WAITING AND PROCESS PARAMS sent from SERVER
+***/
+window.console.log("plot3d >> initial myParams is ",myParams);
 if( myParams == undefined || myParams.includes("?2Long") ) {
 
-  //window.console.log("TO-Server: send me params");
-  window.top.postMessage({'call':'from3DViewer', value:'send params'}, '*');
+window.console.log("plot3d >> TO-SERVER: send me params");
+  window.top.postMessage({'call':'from3DViewer',value:'send params'}, '*');
 
-  var waitInterval = setInterval(function () {
-    if ( !myParams.includes("?2Long") ) {
-//      window.console.log("GOT params from service, size is >> ",myParams.length);
-
+  if ( !myParams.includes("?2Long") ) {
       foo(myParams);
-
-      clearInterval(waitInterval);
-      waitInterval=0;
       } else {
-         window.console.log("Looping in interval..",waitInterval);
-    }
-  }, 1000);
+      // handle this after receive param from server
+window.console.log("plot3d HERE...");
+  }
+
 } else {
 
   foo(myParams);
 
 }
+
+},false);
+
 
 // Auto setup if no method get called within 100ms
 setTimeout(() => {
@@ -1486,6 +1732,8 @@ global.toggleLegend = toggleLegend;
 global.changeColor = changeColor;
 global.changeOpacity = changeOpacity;
 global.toggleSeismicity = toggleSeismicity;
+global.setSeismicity = setSeismicity;
+global.sendCamera2service = sendCamera2service;
 global.toggleRepresentation = toggleRepresentation;
 global.toggleTraceAndFault = toggleTraceAndFault;
 global.toggleShoreline = toggleShoreline;
